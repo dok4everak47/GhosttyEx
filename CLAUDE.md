@@ -32,6 +32,12 @@ ZIG_GLOBAL_CACHE_DIR=/private/tmp/gx-zig-global ZIG_LOCAL_CACHE_DIR=/private/tmp
 cd macos && xcodebuild -project Ghostty.xcodeproj -scheme Ghostty -configuration ReleaseLocal \
   SYMROOT="$PWD/build" ARCHS=arm64 ONLY_ACTIVE_ARCH=YES build
 
+# Or build it and install it as "Ghostty Ex" in ~/Applications, the copy the maintainer runs.
+# This is how a build is handed over; never install over /Applications. Builds in a clean
+# environment, which the repo's nix devshell is not: there the link step fails with
+# "ld: unknown options: -Xlinker".
+./dev-install.sh
+
 cd macos && swiftlint lint --quiet          # must report 0 errors
 node --check macos/EditorWeb/*.js            # editor scripts
 ```
