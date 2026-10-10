@@ -9,10 +9,13 @@ files; where they disagree with this one, follow this one.
 
 People watch this repo. Keep `custom` (the default branch) release-quality.
 
-- Commit to `dev`, or to a feature branch off `dev`. `custom` only changes through a pull
-  request (`gh pr create --base custom --head dev`, then `gh pr merge --merge`); GitHub
-  rejects direct pushes, force-pushes and deletion there, and force-pushes or deletion of
-  `dev` and of release tags.
+- Commit to `dev`, or to a feature branch off `dev`. Pushes go to `origin`
+  (`dok4everak47/GhosttyEx`, and `remote.pushDefault` is set to it); `upstream`
+  (`steventsvik/GhosttyEXTREME`) is what we fetch and pull from, and what `dev` tracks, so a
+  pull request has to name both: `gh pr create --repo steventsvik/GhosttyEXTREME --base custom
+  --head dok4everak47:dev`, then `gh pr merge --repo steventsvik/GhosttyEXTREME --merge`.
+  `custom` only changes through a pull request; GitHub rejects direct pushes, force-pushes and
+  deletion there, and force-pushes or deletion of `dev` and of release tags.
 - Never rewrite pushed history (there are forks).
 - Add every user-visible change to the **Unreleased** section of `CHANGELOG.md` in the
   same commit, written for users.
