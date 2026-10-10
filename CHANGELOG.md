@@ -6,6 +6,8 @@ What changed in each GhosttyEXTREME release. Work in progress collects under
 
 ## Unreleased
 
+- **Drag a session to reorder it.** Sidebar rows can be dragged to a new place in the tab order: the row you picked up lifts, a slot opens where it will land with a gold line in it, and the tab you're on stays selected. The ⋮ menu's Move tab up/down still works.
+
 ## 1.5.5.1
 
 - **No more tab bar at the top of the window.** Tabs live in the sidebar, but macOS's own tab bar could still show up in the window's top corner (#23). It's now removed for good, including with `macos-titlebar-style = tabs`, which now gives the normal transparent titlebar. View → Show Tab Bar is gone too; ⌘1–9, ⌘P and the Window menu still switch tabs when the sidebar is hidden.

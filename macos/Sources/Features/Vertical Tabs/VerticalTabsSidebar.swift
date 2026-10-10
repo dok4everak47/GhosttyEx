@@ -2,6 +2,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Places the vertical tabs sidebar to the left of the terminal content.
 struct VerticalTabsLayout<Content: View>: View {
@@ -436,6 +437,13 @@ struct VerticalTabsSidebar: View {
     @ObservedObject private var localhost = LocalhostSessions.shared
     @ObservedObject private var projects = VerticalTabsProjects.shared
     @ObservedObject private var settings = ExtremeSettings.shared
+    /// The row drag in progress.
+    ///
+    /// Deliberately not view state here. The list below is a plain, non-lazy stack, and a
+    /// property wrapper on this view invalidates it whatever the body reads — so a drag,
+    /// which reports a new position on nearly every mouse move, would rebuild every tab's
+    /// panes. The sidebar only hands the object to the rows, which watch it themselves.
+    private var drag: VerticalTabDragState { .shared }
 
     var body: some View {
         let palette = VerticalTabsPalette(config: config)
@@ -492,6 +500,14 @@ struct VerticalTabsSidebar: View {
                 }
                 .padding(.bottom, 10)
                 .animation(.spring(response: 0.45, dampingFraction: 0.85), value: groupLayout)
+                // A dropped row slides into its new place instead of jumping there.
+                .animation(.spring(response: 0.3, dampingFraction: 0.86), value: model.tabs)
+                // Catches a drop that lands between rows. The rows themselves are deeper,
+                // so they take the drop when the pointer is over one.
+                .onDrop(of: [VerticalTabDragState.pasteboardType],
+                        delegate: VerticalTabListDropDelegate(drag: drag,
+                                                              owner: ObjectIdentifier(owner),
+                                                              drop: moveDraggedTab))
             }
 
             // What's listening on which port (only when something is).
@@ -561,16 +577,34 @@ struct VerticalTabsSidebar: View {
 
     private func tabGroup(_ controller: TerminalController, entry: VerticalTabEntry, index: Int,
                           palette: VerticalTabsPalette, inProject: Bool = false) -> some View {
-        VerticalTabGroup(
-            controller: controller,
-            owner: owner,
-            index: index,
-            tabColor: entry.tabColor,
-            condensed: condensed,
-            collapsed: collapse.collapsed.contains(entry.id),
-            palette: palette,
-            inProject: inProject,
-            onToggleCollapse: { collapse.toggle(entry.id) })
+        VerticalTabDragRow(
+            drag: drag,
+            // Which window's sidebar this is: every window in a tab group shows the same
+            // tabs, and only the one the drag started in should react to it.
+            owner: ObjectIdentifier(owner),
+            // The row's place in the tab order, which is what a drop moves the tab to.
+            index: index - 1,
+            id: entry.id,
+            drop: moveDraggedTab
+        ) {
+            VerticalTabGroup(
+                controller: controller,
+                owner: owner,
+                index: index,
+                tabColor: entry.tabColor,
+                condensed: condensed,
+                collapsed: collapse.collapsed.contains(entry.id),
+                palette: palette,
+                inProject: inProject,
+                onToggleCollapse: { collapse.toggle(entry.id) })
+        }
+    }
+
+    /// Puts the dragged tab where the row it was dropped on sits.
+    private func moveDraggedTab(_ id: ObjectIdentifier, at index: Int) {
+        guard let controller = model.tabs.first(where: { $0.id == id })?.controller else { return }
+        VerticalTabsActions.reorder(controller, to: index)
+        VerticalTabs.setNeedsRefresh()
     }
 
     /// The terminal's own background, a shade deeper.
@@ -616,6 +650,211 @@ struct VerticalTabsSidebar: View {
         .padding(.horizontal, 12)
         .padding(.top, 12)
         .padding(.bottom, 10)
+    }
+}
+
+/// The row being dragged in the sidebar, and where it would land.
+///
+/// Shared, not per-window state: only one row can be under the mouse at a time. See
+/// `VerticalTabsSidebar.drag` for why the sidebar does not hold this itself.
+final class VerticalTabDragState: ObservableObject {
+    static let shared = VerticalTabDragState()
+
+    /// GhosttyEXTREME's own pasteboard type for a dragged row, so a row dropped on the
+    /// terminal or the editor isn't taken as text to type.
+    static var pasteboardType: UTType {
+        UTType("com.steventsvik.ghostty-extreme.sidebar-tab") ?? .data
+    }
+
+    /// The sidebar the drag started in.
+    @Published private(set) var owner: ObjectIdentifier?
+    /// The tab being carried.
+    @Published private(set) var dragging: ObjectIdentifier?
+    /// The row the drag is over, by place in the tab order (0-based).
+    @Published private(set) var target: Int?
+    /// Whether the tab lands after that row rather than before it.
+    @Published private(set) var after = false
+
+    /// Where the dragged tab sits in the tab order. Every drop update needs it, so it is
+    /// remembered here rather than searched for each time.
+    private(set) var origin: Int?
+
+    func begin(_ id: ObjectIdentifier, in owner: ObjectIdentifier, at index: Int) {
+        self.owner = owner
+        dragging = id
+        origin = index
+        target = nil
+        after = false
+    }
+
+    func hover(_ index: Int, after: Bool) {
+        guard target != index || self.after != after else { return }
+        target = index
+        self.after = after
+    }
+
+    func clearHover() {
+        guard target != nil else { return }
+        target = nil
+        after = false
+    }
+
+    func end() {
+        owner = nil
+        dragging = nil
+        origin = nil
+        target = nil
+        after = false
+    }
+
+    /// A drag that ends anywhere but on another row — dropped on the terminal, or cancelled
+    /// with Escape — reports nothing, so the row would stay dimmed. The mouse button coming
+    /// up ends the drag whatever became of it, so that clears it.
+    func watchForEnd() {
+        guard dragging != nil else { return }
+        guard NSEvent.pressedMouseButtons == 0 else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.watchForEnd()
+            }
+            return
+        }
+        end()
+    }
+}
+
+/// One draggable row: the tab's card, plus the drag image, the lifted look, and the slot
+/// that opens where the tab would land.
+private struct VerticalTabDragRow<Content: View>: View {
+    @ObservedObject var drag: VerticalTabDragState
+    /// The sidebar this row belongs to; see `VerticalTabDragState.owner`.
+    let owner: ObjectIdentifier
+    /// The row's place in the tab order (0-based).
+    let index: Int
+    let id: ObjectIdentifier
+    /// Called with the tab and the place it was dropped on.
+    let drop: (ObjectIdentifier, Int) -> Void
+    /// Built by the sidebar and passed as a value: re-rendering this wrapper for a change in
+    /// the drag must not rebuild the tab's panes.
+    let content: Content
+
+    /// How far the list opens up at the edge the tab would land on.
+    private static var slot: CGFloat { 16 }
+
+    private var mine: Bool { drag.owner == owner }
+    private var isDragged: Bool { mine && drag.dragging == id }
+    private var isTarget: Bool { mine && drag.target == index && !isDragged }
+    private var landsAbove: Bool { isTarget && !drag.after }
+    private var landsBelow: Bool { isTarget && drag.after }
+
+    init(drag: VerticalTabDragState, owner: ObjectIdentifier, index: Int, id: ObjectIdentifier,
+         drop: @escaping (ObjectIdentifier, Int) -> Void,
+         @ViewBuilder content: () -> Content) {
+        self.drag = drag
+        self.owner = owner
+        self.index = index
+        self.id = id
+        self.drop = drop
+        self.content = content()
+    }
+
+    var body: some View {
+        content
+            .padding(.top, landsAbove ? Self.slot : 0)
+            .padding(.bottom, landsBelow ? Self.slot : 0)
+            .overlay(alignment: .top) { line.opacity(landsAbove ? 1 : 0) }
+            .overlay(alignment: .bottom) { line.opacity(landsBelow ? 1 : 0) }
+            .opacity(isDragged ? 0.45 : 1)
+            .scaleEffect(isDragged ? 0.98 : 1)
+            .animation(.spring(response: 0.28, dampingFraction: 0.82), value: drag.target)
+            .animation(.spring(response: 0.2, dampingFraction: 0.85), value: isDragged)
+            .onDrag {
+                drag.begin(id, in: owner, at: index)
+                drag.watchForEnd()
+                return NSItemProvider(item: Data() as NSData,
+                                      typeIdentifier: VerticalTabDragState.pasteboardType.identifier)
+            }
+            .onDrop(of: [VerticalTabDragState.pasteboardType],
+                    delegate: VerticalTabDropDelegate(drag: drag, owner: owner, index: index, drop: drop))
+    }
+
+    /// The gold line in the middle of the slot, marking where the tab will land.
+    private var line: some View {
+        Capsule()
+            .fill(Extreme.gold)
+            .frame(height: 2)
+            .padding(.horizontal, 8)
+            .padding(.vertical, (Self.slot - 2) / 2)
+            .allowsHitTesting(false)
+    }
+}
+
+/// Reorders tabs when a row is dragged onto another row. The tab takes the dropped-on row's
+/// place and lands on the side the drag came from, which is the side the slot opens on.
+private struct VerticalTabDropDelegate: DropDelegate {
+    let drag: VerticalTabDragState
+    let owner: ObjectIdentifier
+    /// The row's place in the tab order (0-based).
+    let index: Int
+    let drop: (ObjectIdentifier, Int) -> Void
+
+    /// Whether this row is a candidate for the drag in flight.
+    private var source: Int? { drag.owner == owner ? drag.origin : nil }
+
+    /// Every row of the sidebar the drag started in takes the drop, the one it started on
+    /// included. Refusing a drop is what makes macOS bounce the drag image back to where it
+    /// came from, and picking a row up only to put it straight back is the commonest thing
+    /// you do with one — it should settle, not fly home.
+    func validateDrop(info: DropInfo) -> Bool { source != nil }
+
+    func dropEntered(info: DropInfo) { update() }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        update()
+        return DropProposal(operation: .move)
+    }
+
+    // There is no dropExited: the target is left where it was so the line keeps pointing at
+    // the place the tab would land while the pointer crosses the gap between two rows.
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer { drag.end() }
+        guard let id = drag.dragging, let from = source else { return false }
+        guard from != index else { return true }  // put back where it started: nothing to do
+        // Reordering a tab group makes AppKit re-parent the window's views, which takes long
+        // enough to hold up the drag's own teardown if it runs here, inside the drag
+        // session's event loop. The row lands now; the window reorders on the next turn.
+        DispatchQueue.main.async { drop(id, index) }
+        return true
+    }
+
+    private func update() {
+        guard let from = source else { return }
+        guard from != index else {
+            drag.clearHover()  // back over the row being dragged: nowhere to land
+            return
+        }
+        drag.hover(index, after: from < index)
+    }
+}
+
+/// Takes a drop that lands between rows — in the gap, on the section label, on the list's
+/// padding — and puts the tab where the line was pointing. Without this those drops have no
+/// target and macOS bounces the drag image back instead.
+private struct VerticalTabListDropDelegate: DropDelegate {
+    let drag: VerticalTabDragState
+    let owner: ObjectIdentifier
+    let drop: (ObjectIdentifier, Int) -> Void
+
+    private var isOurs: Bool { drag.owner == owner && drag.origin != nil }
+
+    func validateDrop(info: DropInfo) -> Bool { isOurs }
+
+    func performDrop(info: DropInfo) -> Bool {
+        defer { drag.end() }
+        guard let id = drag.dragging, let from = drag.origin else { return false }
+        guard let to = drag.target, to != from else { return true }  // no place to land
+        DispatchQueue.main.async { drop(id, to) }
+        return true
     }
 }
 

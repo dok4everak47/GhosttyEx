@@ -38,7 +38,12 @@ enum VerticalTabsActions {
     }
 
     /// Moves a tab to a position in its tab group, keeping it selected.
-    static func move(_ controller: TerminalController, to newIndex: Int) {
+    ///
+    /// `selecting` is false when the moved tab is not the one you are looking at, as when a
+    /// sidebar row is dropped: making it key only to put the selection back leaves the
+    /// selection changed twice, and the window ordering either side of that is the most
+    /// expensive part of a reorder.
+    static func move(_ controller: TerminalController, to newIndex: Int, selecting: Bool = true) {
         guard let window = controller.window, let group = window.tabGroup,
               let current = group.windows.firstIndex(of: window) else { return }
         let target = max(0, min(newIndex, group.windows.count - 1))
@@ -51,13 +56,32 @@ enum VerticalTabsActions {
         anchor.addTabbedWindowSafely(window, ordered: target < current ? .below : .above)
         NSAnimationContext.endGrouping()
 
-        window.makeKeyAndOrderFront(nil)
+        if selecting { window.makeKeyAndOrderFront(nil) }
         controller.relabelTabs()
     }
 
     static func moveBy(_ controller: TerminalController, _ delta: Int) {
         guard let position = index(of: controller) else { return }
         move(controller, to: position.index + delta)
+    }
+
+    /// Moves a tab to a place in its tab group without switching to it, for dragging a row
+    /// in the sidebar. The tab you were on stays selected.
+    static func reorder(_ controller: TerminalController, to newIndex: Int) {
+        guard let window = controller.window, let group = window.tabGroup,
+              let current = group.windows.firstIndex(of: window) else { return }
+        let target = max(0, min(newIndex, group.windows.count - 1))
+        guard target != current else { return }
+        let selected = group.selectedWindow
+
+        move(controller, to: target, selecting: false)
+
+        // Taking a window out of a tab group can move the selection, so put it back — but
+        // only if it actually moved, since selecting a window is the slow part.
+        if let selected, selected !== window, group.selectedWindow !== selected {
+            group.selectedWindow = selected
+            selected.makeKey()
+        }
     }
 
     /// Detaches the tab into its own window.
