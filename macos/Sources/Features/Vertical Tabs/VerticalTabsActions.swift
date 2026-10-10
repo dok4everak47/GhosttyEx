@@ -26,6 +26,23 @@ final class VerticalTabsPins: ObservableObject {
         }
         VerticalTabs.setNeedsRefresh()
     }
+
+    /// Settles a dragged tab's pin against where it was dropped: a tab dropped among the
+    /// pinned tabs is pinned, and one dropped below them is not. Pinned tabs are held at the
+    /// top of the list by nothing but this, which is what lets `togglePin` work out where the
+    /// next pinned tab goes by counting them.
+    ///
+    /// `index` is the place the tab is going to, counted in the tab order without the tab
+    /// itself, so the run of pinned tabs is the one the tab is about to join or leave.
+    func dragged(_ controller: TerminalController, to index: Int, among tabs: [VerticalTabEntry]) {
+        let id = ObjectIdentifier(controller)
+        let others = tabs.filter { $0.id != id }
+        let run = others.prefix { $0.controller.map { self.isPinned($0) } == true }.count
+        let target = max(0, min(index, max(tabs.count - 1, 0)))
+        let wanted = target < run
+        guard wanted != pinned.contains(id) else { return }
+        if wanted { pinned.insert(id) } else { pinned.remove(id) }
+    }
 }
 
 /// Tab operations offered by the sidebar's ⋮ menu.
@@ -50,10 +67,27 @@ enum VerticalTabsActions {
         guard target != current else { return }
         let anchor = group.windows[target]
 
+        // Where the window is on screen, and which tab is showing it.
+        //
+        // Taking a tab out of a tab group and putting it back can carry a frame with it: the
+        // one the window had on its own, which is not where the window is, since a tab that
+        // isn't the one on screen is somewhere else (see `newWindow`, which cascades and then
+        // widens a window before tabbing it). AppKit gives the group that frame, and the
+        // whole window moves. This is the same trouble `windowWillClose` keeps and restores a
+        // frame for. Fullscreen windows are left alone: their frame is not theirs to set.
+        let frame = group.selectedWindow?.frame
+        let shown = group.selectedWindow
+        let fullscreen = window.styleMask.contains(.fullScreen)
+
         NSAnimationContext.beginGrouping()
         NSAnimationContext.current.duration = 0
         group.removeWindow(window)
         anchor.addTabbedWindowSafely(window, ordered: target < current ? .below : .above)
+        if !fullscreen, let frame {
+            for tab in [window, shown] where tab != nil && tab?.frame != frame {
+                tab?.setFrame(frame, display: true)
+            }
+        }
         NSAnimationContext.endGrouping()
 
         if selecting { window.makeKeyAndOrderFront(nil) }
@@ -76,9 +110,13 @@ enum VerticalTabsActions {
 
         move(controller, to: target, selecting: false)
 
-        // Taking a window out of a tab group can move the selection, so put it back — but
-        // only if it actually moved, since selecting a window is the slow part.
-        if let selected, selected !== window, group.selectedWindow !== selected {
+        // Taking a window out of a tab group moves the selection, and that includes taking
+        // out the selected window itself: AppKit picks another tab to be current, and
+        // re-adding the window doesn't take it back (see `onMoveTab`, which puts the
+        // selection back by hand for the same reason). So put it back here too, whichever
+        // tab was dragged — but only when it actually moved, since setting `selectedWindow`
+        // is the slow part of a reorder.
+        if let selected, group.selectedWindow !== selected {
             group.selectedWindow = selected
             selected.makeKey()
         }

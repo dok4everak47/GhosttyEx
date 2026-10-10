@@ -25,6 +25,10 @@ final class VerticalTabsProjects: ObservableObject {
     }
 
     @Published private(set) var groups: [String: Group] = [:]
+    /// Tabs the user pulled out of their project's bracket by dragging them away from the
+    /// project's other tabs. Kept for this app session, like the pinned tabs: the tab is
+    /// still one of the project's, it just isn't drawn inside the bracket any more.
+    @Published private(set) var detached: Set<ObjectIdentifier> = []
     private var tabGroup: [ObjectIdentifier: String] = [:]
     private var cancellables: Set<AnyCancellable> = []
 
@@ -48,6 +52,89 @@ final class VerticalTabsProjects: ObservableObject {
 
     func group(for controller: TerminalController) -> Group? {
         tabGroup[ObjectIdentifier(controller)].flatMap { groups[$0] }
+    }
+
+    func isDetached(_ controller: TerminalController) -> Bool {
+        detached.contains(ObjectIdentifier(controller))
+    }
+
+    func detach(_ controller: TerminalController) {
+        let id = ObjectIdentifier(controller)
+        guard tabGroup[id] != nil, !detached.contains(id) else { return }
+        detached.insert(id)
+    }
+
+    func reattach(_ controller: TerminalController) {
+        let id = ObjectIdentifier(controller)
+        guard detached.contains(id) else { return }
+        detached.remove(id)
+    }
+
+    /// Whether moving `controller` to `index` takes it out of its project's bracket.
+    ///
+    /// The sidebar draws a project's tabs together, at the place its earliest tab holds in
+    /// the tab order, so a tab parked away from all the others would be gathered straight
+    /// back and the drag would look like it had done nothing. A tab that ends up beside at
+    /// least one of its project's tabs is taken to be staying; one that ends up away from
+    /// all of them is taken to be leaving, and the sidebar draws it as an ordinary tab from
+    /// then on. Put it back from the tab's menu.
+    ///
+    /// `order` is the tab order as it stands now, and `index` the place the tab is going to,
+    /// both of which the caller reads off the sidebar's own list of tabs.
+    func leavesBracket(_ controller: TerminalController, movingTo index: Int, in order: [ObjectIdentifier]) -> Bool {
+        let id = ObjectIdentifier(controller)
+        guard !detached.contains(id), let group = group(for: controller),
+              let from = order.firstIndex(of: id) else { return false }
+        let mates = group.members.subtracting(detached).subtracting([id])
+        guard !mates.isEmpty else { return false }
+
+        // Where the move leaves it: a tab lands on the index it was dropped on, which is
+        // what `VerticalTabsActions.move` does with it.
+        var moved = order
+        moved.remove(at: from)
+        moved.insert(id, at: max(0, min(index, moved.count)))
+        guard let to = moved.firstIndex(of: id) else { return false }
+
+        let neighbours = [to - 1, to + 1].compactMap { moved.indices.contains($0) ? moved[$0] : nil }
+        return !neighbours.contains { mates.contains($0) }
+    }
+
+    /// The tab order a drop on one of a project's own tabs should leave behind, or nil when
+    /// the two tabs are not in one bracket, leaving the caller an ordinary move to make.
+    ///
+    /// Because a project's tabs are drawn together at the place its earliest tab holds in the
+    /// tab order, moving one of them to another one's place can carry the whole bracket with
+    /// it: drag the earliest tab down past the others and the earliest place changes hands, so
+    /// the block jumps down there and the tab that held that place is left above it. A tab
+    /// dropped on one of its own project's tabs is changing places with it inside the bracket,
+    /// then, and never moving in the tab order. The bracket keeps the room it holds and only
+    /// its own tabs change places.
+    ///
+    /// `order` is the tab order as it stands, and `onto` the tab the row was dropped on. The
+    /// dragged tab lands on the side of `onto` the drag came from, as anywhere else in the
+    /// list: dropping above a tab puts it before, dropping below puts it after.
+    func reorderWithinBracket(dragged: ObjectIdentifier, onto: ObjectIdentifier,
+                              in order: [ObjectIdentifier]) -> [ObjectIdentifier]? {
+        let bracket = tabGroup[dragged]
+        let drawn: (ObjectIdentifier) -> Bool = {
+            self.tabGroup[$0] != nil && self.tabGroup[$0] == bracket && !self.detached.contains($0)
+        }
+        guard bracket != nil, drawn(dragged), drawn(onto),
+              let top = order.firstIndex(where: drawn),
+              let ontoAt = order.firstIndex(of: onto),
+              let from = order.firstIndex(of: dragged), from != ontoAt else { return nil }
+
+        // The project's tabs as the sidebar draws them, in the tab order.
+        var members = order.filter(drawn)
+        guard let i = members.firstIndex(of: dragged), let j = members.firstIndex(of: onto) else { return nil }
+        members.remove(at: i)
+        members.insert(dragged, at: j)
+
+        // Every tab above the bracket is outside it, so the block keeps the room it holds and
+        // the tabs inside it are the only ones that change places.
+        var want = order.filter { !drawn($0) }
+        want.insert(contentsOf: members, at: min(top, want.count))
+        return want
     }
 
     /// Stop grouping this project (it can be grouped again from the tab's menu).
@@ -99,6 +186,11 @@ final class VerticalTabsProjects: ObservableObject {
     }
 
     private func recompute() {
+        // A closed tab's identifier can be handed to a new object, so a pulled-out tab that
+        // has gone must not be remembered.
+        let live = Set(Self.openControllers.map { ObjectIdentifier($0) })
+        if !detached.isSubset(of: live) { detached.formIntersection(live) }
+
         var members: [String: Set<ObjectIdentifier>] = [:]
         var agentTabs: [String: Int] = [:]
         var agents: [String: Int] = [:]

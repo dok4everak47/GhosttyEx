@@ -7,6 +7,14 @@ What changed in each GhosttyEXTREME release. Work in progress collects under
 ## Unreleased
 
 - **Drag a session to reorder it.** Sidebar rows can be dragged to a new place in the tab order: the row you picked up lifts, a slot opens where it will land with a gold line in it, and the tab you're on stays selected. The ⋮ menu's Move tab up/down still works.
+- Drop a session on the header to send it to the front, or on anything below the list to send it last. Dropping it anywhere in the sidebar now settles instead of flying back to where you picked it up.
+- Dragging decides pinning and project grouping. A session dropped in among the pinned sessions is pinned, and one dropped below them is unpinned. A session dragged away from its project's other sessions leaves that project's bracket, which it can rejoin from its ⋮ menu.
+- **Dropping a session on one of its own project's sessions keeps the project where it is.** It used to move the session down the tab order, which handed the project's place in the sidebar to another of its sessions: dragging a project's first session onto a later one sent the block to the bottom and pulled the session that was there up to the top. The project's sessions now change places among themselves and nothing else moves.
+- Dropping a session on a project's header — or on a folded project — puts it at the top of that project's sessions, with the gold line at the top of the block. Dropping it on the Sessions label puts it first. Those places used to take it wherever the pointer had last been over a row, or do nothing at all.
+- **Dragging a session no longer moves the window.** Taking a tab out of its tab group and putting it back could leave the window at the frame that tab had before it joined the group rather than the group's own, so the window sometimes jumped a little way across the screen part-way through a drag. It keeps its place now, and fullscreen windows are left alone as before.
+- **A dropped session settles in one motion, and a cancelled drag comes back at once.** The slot that opened for the row used to close the moment the mouse came up, with the row sliding to its new place a moment later; the slot now stays open until the tab has actually moved into it. And a session dragged somewhere that isn't a drop — the terminal, or a drag cancelled with Escape — used to stay dimmed for up to a fifth of a second after the mouse was up.
+- Dragging across the list is lighter: only the rows that make room for the session are animated now, rather than every row in the list being animated on every mouse move.
+- **A session dragged to either end of the list now scrolls it**, faster the closer to the end the pointer is, so a tab can be carried past the bottom of a list longer than the sidebar.
 
 ## 1.5.5.1
 
