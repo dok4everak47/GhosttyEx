@@ -262,6 +262,13 @@ private struct VerticalTabsMenuPanel: View {
             item("Move tab to new window", enabled: count > 1) {
                 VerticalTabsActions.moveToNewWindow(controller)
             }
+            // Offered only where it does something: a tab working in a folder no workspace
+            // owns yet. This is the one way a workspace is made.
+            if VerticalTabsWorkspaces.shared.canCreateWorkspace(for: controller) {
+                item("New Workspace") {
+                    VerticalTabsWorkspaces.shared.createWorkspace(for: controller)
+                }
+            }
             separator
             item("Copy pane title") {
                 VerticalTabsActions.copy(pane.title)

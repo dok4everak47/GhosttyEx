@@ -673,7 +673,14 @@ struct VerticalTabsSidebar: View {
             }
             result.append(.section(section, members.map { ($0.offset + 1, $0.element) }))
         }
-        if let otherSection { result.append(.section(otherSection, other)) }
+        // With no workspace made yet there is nothing for them to be left out of, so they
+        // stand on their own under the Sessions label rather than under a heading that says
+        // nothing about them.
+        if let otherSection, !placed.isEmpty {
+            result.append(.section(otherSection, other))
+        } else {
+            result.append(contentsOf: other.map { .tab($0.0, $0.1) })
+        }
         return result
     }
 
@@ -689,6 +696,9 @@ struct VerticalTabsSidebar: View {
         let moveTo = workspaces.isFiled(controller)
             ? workspaces.folderWorkspace(for: controller)?.name ?? VerticalTabsWorkspaces.otherName
             : nil
+        // Whether this tab's folder is one no workspace owns yet, which is the one thing
+        // "New Workspace" needs.
+        let newWorkspace = workspaces.canCreateWorkspace(for: controller)
         return VerticalTabDragRow(
             drag: drag,
             // Which window's sidebar this is: every window in a tab group shows the same
@@ -711,6 +721,7 @@ struct VerticalTabsSidebar: View {
                 sectionColor: sectionColor,
                 putBackWorkspace: workspaces.isDetached(controller) ? section?.name : nil,
                 moveTo: moveTo,
+                newWorkspace: newWorkspace,
                 onToggleCollapse: { collapse.toggle(entry.id) })
         }
     }
@@ -1449,6 +1460,9 @@ private struct VerticalTabGroup: View {
     /// Where this tab would be drawn if the user hadn't filed it in a workspace by hand. Set
     /// only for a tab that was, so the row's menu can offer to put it back with its folder.
     var moveTo: String?
+    /// Whether the tab works in a folder no workspace owns, so its menu can offer to make one
+    /// out of it. This is how a workspace comes to exist; nothing else makes one.
+    var newWorkspace = false
     let onToggleCollapse: () -> Void
 
     @State private var snapshot: VerticalTabSnapshot = .empty
@@ -1583,6 +1597,12 @@ private struct VerticalTabGroup: View {
         if let moveTo {
             Button("Move to \(moveTo)") {
                 VerticalTabsWorkspaces.shared.unassign(controller)
+            }
+            Divider()
+        }
+        if newWorkspace {
+            Button("New Workspace") {
+                VerticalTabsWorkspaces.shared.createWorkspace(for: controller)
             }
             Divider()
         }

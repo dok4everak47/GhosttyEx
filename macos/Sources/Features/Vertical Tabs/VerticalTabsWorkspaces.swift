@@ -7,10 +7,11 @@ import SwiftUI
 /// tabs that work there gathered inside them.
 ///
 /// A tab belongs to the workspace that owns the folder its agent — or, failing that, its
-/// focused pane — is in. A folder no workspace owns gets a workspace of its own, named after
-/// the folder, so a new place to work becomes its own section without being set up first.
-/// Tabs with no folder of their own — the home folder, the disk, a Hermes tab — fall into the
-/// implicit "Other" section, which the sidebar draws last.
+/// focused pane — is in, and joins it the moment it works there. A workspace itself is made by
+/// hand, though, from a tab that works in the folder it should own: nothing is grouped on its
+/// own, and a tab whose folder belongs to no workspace is drawn on its own. Tabs with no folder
+/// of their own — the home folder, the disk, a Hermes tab — are never made into one, since a
+/// workspace is a place to work.
 ///
 /// Which tabs a section holds is worked out across every window's tabs, since one workspace is
 /// usually open in more than one; a window's sidebar still only draws its own tab group's tabs.
@@ -29,17 +30,15 @@ final class VerticalTabsWorkspaces: ObservableObject {
 
     /// A workspace: a name, and the folders it owns.
     struct Workspace: Codable, Equatable, Identifiable {
-        /// The folder it was seeded from, which is also how it is found: one folder belongs to
+        /// The folder it was made from, which is also how it is found: one folder belongs to
         /// one workspace.
         let id: String
         var name: String
         /// The folder as it is spelled on disk, for naming and showing.
         let root: String
-        /// The canonical folders this workspace owns. `roots[0]` is the seed root.
+        /// The canonical folders this workspace owns. `roots[0]` is the folder it was made
+        /// from.
         var roots: [String]
-        /// False once the user has named it themselves. A workspace the user made is kept when
-        /// its tabs close; one that was seeded and never touched is dropped with its last tab.
-        var isSeeded: Bool
     }
 
     /// A workspace with the tabs it holds right now, as the sidebar draws it.
@@ -286,12 +285,50 @@ final class VerticalTabsWorkspaces: ObservableObject {
         return best
     }
 
-    /// The workspace that owns `canonical`, made on the spot if no workspace does yet.
-    private func seed(root: String, canonical: String) -> String {
+    /// The workspace that owns `canonical`, made on the spot if no workspace does yet. Only
+    /// "New Workspace" calls this: nothing is grouped on its own. Once a workspace is there,
+    /// the tabs working in its folder join it without being filed by hand.
+    private func create(root: String, canonical: String) -> String {
+        if let existing = workspaceID(for: canonical) { return existing }
         workspaces[canonical] = Workspace(id: canonical, name: ProjectPath.displayName(root),
-                                          root: root, roots: [canonical], isSeeded: true)
+                                          root: root, roots: [canonical])
         byRoot[canonical] = canonical
         return canonical
+    }
+
+    /// Whether "New Workspace" would make one: the tab works in a folder no workspace owns.
+    /// False for a tab with no folder of its own, since a workspace is a place to work.
+    func canCreateWorkspace(for controller: TerminalController) -> Bool {
+        guard let membership = Self.membership(of: controller) else { return false }
+        return workspaceID(for: membership.canonical) == nil
+    }
+
+    /// Makes a workspace out of the folder a tab works in and puts the tab in it.
+    @discardableResult
+    func createWorkspace(for controller: TerminalController) -> String? {
+        guard let membership = Self.membership(of: controller) else { return nil }
+        let id = create(root: membership.root, canonical: membership.canonical)
+        assign(controller, to: id)
+        return id
+    }
+
+    /// Undoes `create`. The folder goes back to being owned by nobody, so the tabs working in
+    /// it are drawn on their own again, and a tab filed in the workspace by hand falls back to
+    /// its folder — which is now no workspace at all.
+    func delete(_ id: String) {
+        guard workspaces.removeValue(forKey: id) != nil else { return }
+        // Before `recompute`, which looks folders up: a root left pointing at a workspace that
+        // has gone would put its tabs in no section at all, and no section draws them.
+        rebuildRoots()
+        recompute()
+    }
+
+    /// The canonical folder -> workspace lookup, rebuilt whenever the workspaces change.
+    private func rebuildRoots() {
+        byRoot = [:]
+        for workspace in workspaces.values {
+            for root in workspace.roots where byRoot[root] == nil { byRoot[root] = workspace.id }
+        }
     }
 
     private func recompute() {
@@ -307,13 +344,11 @@ final class VerticalTabsWorkspaces: ObservableObject {
         var agents: [String: Int] = [:]
         for controller in Self.openControllers {
             let id = ObjectIdentifier(controller)
+            // A workspace is made by hand — see `create` — so a tab whose folder belongs to
+            // none of them is drawn on its own, under "Other", until one is made for it.
             let membership = Self.membership(of: controller)
-            // A tab the user filed by hand is drawn there whatever its folder says; one whose
-            // workspace has gone falls back to its folder.
             let filed = assigned[id].flatMap { workspaces[$0] != nil ? $0 : nil }
-            guard let section = filed ?? membership.map({
-                workspaceID(for: $0.canonical) ?? seed(root: $0.root, canonical: $0.canonical)
-            }) else {
+            guard let section = filed ?? membership.flatMap({ workspaceID(for: $0.canonical) }) else {
                 members[Self.otherID, default: []].insert(id)
                 continue
             }
@@ -366,16 +401,11 @@ final class VerticalTabsWorkspaces: ObservableObject {
         }
     }
 
-    /// Writes the workspaces out, leaving out the seeded ones that no longer hold a tab: a
-    /// folder looked at once shouldn't become a workspace for good. One the user named is kept
-    /// whatever it holds.
+    /// Writes the workspaces out. One that holds no tabs is kept rather than dropped: a
+    /// workspace is made by hand, so it goes when the user says so, not when its last tab
+    /// closes.
     private func save() {
-        let held = Set(sections.filter { !$0.isImplicit }.map(\.id))
-        workspaces = workspaces.filter { !$0.value.isSeeded || held.contains($0.key) }
-        byRoot = [:]
-        for workspace in workspaces.values {
-            for root in workspace.roots where byRoot[root] == nil { byRoot[root] = workspace.id }
-        }
+        rebuildRoots()
 
         let list = workspaces.values.sorted { $0.id < $1.id }
         let encoder = JSONEncoder()
@@ -466,6 +496,10 @@ struct VerticalTabsWorkspaceSectionView<Content: View>: View {
             if let root = section.root {
                 Button("Open \(section.name) in Code Editor") { EditorPanel.shared.show(from: owner, folder: root) }
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: root)]) }
+                Divider()
+                // The tabs are not closed, and nothing else about them changes: they go back
+                // to being drawn on their own. "New Workspace" can make it again.
+                Button("Delete Workspace") { VerticalTabsWorkspaces.shared.delete(section.id) }
                 Divider()
             }
             Button(collapsed ? "Show Tabs" : "Fold Tabs", action: toggleCollapse)
