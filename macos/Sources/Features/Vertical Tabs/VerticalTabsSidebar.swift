@@ -490,13 +490,15 @@ struct VerticalTabsSidebar: View {
                             .padding(.top, 10)
                             .padding(.bottom, rowGutter)
                             // The one part of the list no row covers, and it stands for the
-                            // top of the list: a row dropped on it goes first.
+                            // top of the list: a row dropped on it goes first, and — like
+                            // every other place that names no workspace — leaves the one it
+                            // was in.
                             .onDrop(of: [VerticalTabDragState.pasteboardType],
                                     delegate: VerticalTabEdgeDropDelegate(drag: drag,
                                                                           owner: ObjectIdentifier(owner),
                                                                           toFront: true,
                                                                           count: model.tabs.count,
-                                                                          drop: moveDraggedTab))
+                                                                          drop: pullDraggedTab))
                             ForEach(items()) { item in
                                 switch item {
                                 case .tab(let index, let entry):
@@ -510,12 +512,12 @@ struct VerticalTabsSidebar: View {
                                             .transition(.opacity)
                                     }
                                 case .section(let section, let members):
-                                    // A drop on a workspace's own header (or on the whole of
-                                    // it while it's folded) merges the workspace the tab
-                                    // comes from into this one, which is the one thing a
-                                    // drop on the block can name. "Other" is not a workspace,
-                                    // so a drop there is an ordinary move to the top of it.
-                                    let drop: (ObjectIdentifier, Int) -> Void = section.isImplicit
+                                    // A drop on a workspace's header merges the workspace the
+                                    // tab comes from into this one, which is the one thing a
+                                    // drop on the name can name. "Other" is not a workspace,
+                                    // so a drop on its name is an ordinary move to the top of
+                                    // it.
+                                    let block: (ObjectIdentifier, Int) -> Void = section.isImplicit
                                         ? moveDraggedTab
                                         : { [section] id, index in
                                             dropOnBlock(id, onto: section.id, at: index)
@@ -539,7 +541,7 @@ struct VerticalTabsSidebar: View {
                                         section: section,
                                         controllers: members.compactMap(\.1.controller),
                                         owner: owner,
-                                        block: drop,
+                                        block: block,
                                         first: first
                                     ) {
                                         VStack(spacing: 0) {
@@ -552,12 +554,19 @@ struct VerticalTabsSidebar: View {
                                             }
                                         }
                                     }
-                                    // The block's whole frame is a drop target too, so that the
-                                    // parts of it no row covers — the gaps between rows, the
-                                    // strip the block's inset leaves on the left — name this
-                                    // workspace rather than falling to the list below, which
-                                    // only knows how to move a tab in the tab order. Rows
-                                    // inside it are deeper, and still take their own drops.
+                                    // The block's frame, and everything inside it that no row
+                                    // and no header covers: the room its own inset leaves, the
+                                    // gaps between its rows, and the space it keeps above and
+                                    // below itself. None of that names a workspace, so a
+                                    // session dropped there leaves the one it was in and is
+                                    // drawn on its own — which is how a session is taken back
+                                    // out of a workspace at all, since every other place a
+                                    // drop can land names one.
+                                    //
+                                    // It is a shape of the block's own making, so those places
+                                    // are reached at all: without it a drop in the gap between
+                                    // two blocks falls to the list below, which only knows how
+                                    // to move a tab in the tab order.
                                     .contentShape(Rectangle())
                                     // The line at the top of the block, which is where a drop
                                     // on the block puts the tab.
@@ -571,7 +580,7 @@ struct VerticalTabsSidebar: View {
                                                                                    owner: ObjectIdentifier(owner),
                                                                                    block: section.id,
                                                                                    top: first - 1,
-                                                                                   drop: drop))
+                                                                                   drop: pullDraggedTab))
                                     .transition(.asymmetric(insertion: .scale(scale: 0.97, anchor: .top).combined(with: .opacity),
                                                             removal: .opacity))
                                 }
@@ -587,24 +596,28 @@ struct VerticalTabsSidebar: View {
                         .animation(.spring(response: 0.3, dampingFraction: 0.86), value: model.tabs)
                         // Catches a drop in the room the list fills below its last row, and in
                         // whatever strip of it no row covers. Everything else in the sidebar
-                        // has a drop target of its own: the rows and the project blocks are
-                        // deeper than this one, and so take the drop when the pointer is over
-                        // them.
+                        // has a drop target of its own: the rows and the blocks are deeper
+                        // than this one, and so take the drop when the pointer is over them.
+                        // What is left is the room around the last block, which names no
+                        // workspace, so a session dropped there leaves the one it was in.
                         .onDrop(of: [VerticalTabDragState.pasteboardType],
                                 delegate: VerticalTabListDropDelegate(drag: drag,
                                                                       owner: ObjectIdentifier(owner),
-                                                                      drop: moveDraggedTab))
+                                                                      drop: pullDraggedTab))
                     }
                 }
             }
+            // Everything above the list, which names no workspace either: the tab goes to the
+            // front, and comes out of the workspace it was in.
             .onDrop(of: [VerticalTabDragState.pasteboardType],
                     delegate: VerticalTabEdgeDropDelegate(drag: drag,
                                                           owner: ObjectIdentifier(owner),
                                                           toFront: true,
                                                           count: model.tabs.count,
-                                                          drop: moveDraggedTab))
+                                                          drop: pullDraggedTab))
 
-            // Everything below the list. A row dropped here goes last.
+            // Everything below the list. A row dropped here goes last, and comes out of the
+            // workspace it was in.
             VStack(spacing: 0) {
                 // What's listening on which port (only when something is).
                 if settings.isOn(.ports) {
@@ -630,7 +643,7 @@ struct VerticalTabsSidebar: View {
                                                           owner: ObjectIdentifier(owner),
                                                           toFront: false,
                                                           count: model.tabs.count,
-                                                          drop: moveDraggedTab))
+                                                          drop: pullDraggedTab))
         }
         .background(sidebarBackground)
         .onAppear { Extreme.registerFonts() }
@@ -804,8 +817,10 @@ struct VerticalTabsSidebar: View {
         VerticalTabs.setNeedsRefresh()
     }
 
-    /// A drop on a workspace's block: its header, its status line, or the whole of it while it
-    /// is folded — the places inside it no row covers.
+    /// A drop on a workspace's header: its name, the controls beside it, and the status line
+    /// under it — everything the header view covers. This is the one place a workspace can be
+    /// named; the rest of the block is the space around it, which names none and so lets a tab
+    /// out rather than taking one in.
     ///
     /// A tab drawn in another workspace brings that workspace with it, which is the one thing a
     /// drop here can name, and the two become one under this workspace's name. A tab drawn in
@@ -844,6 +859,26 @@ struct VerticalTabsSidebar: View {
             return
         }
         fileDraggedTab(id, in: workspace, at: index)
+    }
+
+    /// Takes the dragged tab out of its workspace and puts it where it was dropped, drawn on
+    /// its own rather than gathered back in among the workspace's other tabs.
+    ///
+    /// This is what a drop in the space around a block means, and it has to be said out loud
+    /// rather than left to where the tab lands: a workspace's tabs are drawn gathered together
+    /// at the earliest place one of them holds, so a tab put down anywhere near its own is
+    /// drawn as one of them again. Pulling it out is a thing the drop does, not a place it
+    /// lands on.
+    ///
+    /// A tab that belongs to no workspace is left where the sidebar already draws it: **Other**
+    /// is the one place such a tab has, and pulling it out of there would only carry it up
+    /// among the workspaces, which says nothing true about it.
+    private func pullDraggedTab(_ id: ObjectIdentifier, at index: Int) {
+        if let controller = model.tabs.first(where: { $0.id == id })?.controller,
+           workspaces.section(for: controller)?.id != VerticalTabsWorkspaces.otherID {
+            workspaces.detach(controller)
+        }
+        moveDraggedTab(id, at: index)
     }
 
     /// The tabs to move, and where, to leave the tab order as `want` reads: the tabs already
@@ -1283,10 +1318,11 @@ private struct VerticalTabDropDelegate: DropDelegate {
     }
 }
 
-/// Takes the drops in the list that no row or project block claims — the room below the last
-/// row, and the strips beside a row — and puts the tab where the line was pointing, which is
-/// the last row the pointer was over. Without this those drops have no target and macOS
-/// bounces the drag image back instead.
+/// Takes the drops in the list that no row and no block claims — the room below the last row,
+/// and the strips beside a row — and puts the tab where the line was pointing, which is the
+/// last row the pointer was over. None of this space belongs to a workspace, which is the
+/// point of it: it is where a tab is carried to be taken out of the one it was in. Without
+/// this those drops have no target and macOS bounces the drag image back instead.
 private struct VerticalTabListDropDelegate: DropDelegate {
     let drag: VerticalTabDragState
     let owner: ObjectIdentifier
@@ -1309,6 +1345,10 @@ private struct VerticalTabListDropDelegate: DropDelegate {
 /// it the tab goes last. There is no row to say where the tab should sit, so the whole run of
 /// sidebar either side of the list names one end of it, and refusing those drops is what
 /// leaves the drag image flying back to where it was picked up.
+///
+/// Neither end names a workspace, so the sidebar takes the tab out of the one it was in —
+/// which here is not a matter of where it lands: the ends of the list are beside a block as
+/// often as not, and a tab put down beside its own is drawn as one of them again.
 private struct VerticalTabEdgeDropDelegate: DropDelegate {
     let drag: VerticalTabDragState
     let owner: ObjectIdentifier
@@ -1343,14 +1383,16 @@ private struct VerticalTabEdgeDropDelegate: DropDelegate {
 }
 
 /// Takes a drop that lands on a workspace's block rather than on one of the rows inside it:
-/// its header, the strip the block's inset leaves on the left, and the gaps between its rows.
-/// The tab goes to the top of that workspace's tabs, which is the one place a drop on the
-/// block can name — the block is drawn as one thing, wherever its earliest tab sits in the
-/// tab order.
+/// the strip the block's inset leaves on the left, and the gaps between its rows. The tab goes
+/// to the top of that workspace's tabs, which is the one place in the block a drop can name —
+/// the block is drawn as one thing, wherever its earliest tab sits in the tab order. What the
+/// drop means is the caller's to say: this space names no workspace, and the block's surround
+/// is where a tab is carried to leave one.
 ///
 /// The block's header carries one of these of its own, deeper than the block's: a target a
-/// whole block carries is not reached over a header. Both name the same place, and the second
-/// of the two to be told about a drop finds the drag already over.
+/// whole block carries is not reached over a header. The header's is the target a drop on a
+/// workspace's name reaches — the one place a workspace can be named — and the second of the
+/// two to be told about a drop finds the drag already over.
 struct VerticalTabBlockDropDelegate: DropDelegate {
     let drag: VerticalTabDragState
     let owner: ObjectIdentifier

@@ -538,9 +538,9 @@ struct VerticalTabsWorkspaceSectionView<Content: View>: View {
             }
             Button(collapsed ? "Show Tabs" : "Fold Tabs", action: toggleCollapse)
         }
-        // The block's own drop target, and the one that matters: this is where the sidebar
-        // hands a drop "this workspace" rather than "this row", which is how one workspace is
-        // merged into another.
+        // The header's own drop target, and the one place a workspace can be named: this is
+        // where the sidebar hands a drop "this workspace" rather than "this row", which is how
+        // one workspace is merged into another.
         //
         // It stands on the header itself, and wraps everything the header carries, because a
         // target a whole block carries is not reached over a header: the drop went past the
