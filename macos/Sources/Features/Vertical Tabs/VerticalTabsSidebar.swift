@@ -489,6 +489,14 @@ struct VerticalTabsSidebar: View {
                             .padding(.horizontal, 12)
                             .padding(.top, 10)
                             .padding(.bottom, rowGutter)
+                            // The label draws a word and a hairline, and leaves the rest of the
+                            // strip around them transparent. Without a shape of its own the
+                            // drop in that space is not the label's at all: it falls to the
+                            // list, which reads a place off the row the pointer was last over
+                            // and puts the tab at the end of the list when there was none —
+                            // so the top of the list threw the row to the bottom. The strip
+                            // is one place, and its shape says so.
+                            .contentShape(Rectangle())
                             // The one part of the list no row covers, and it stands for the
                             // top of the list: a row dropped on it goes first, and — like
                             // every other place that names no workspace — leaves the one it
@@ -611,7 +619,11 @@ struct VerticalTabsSidebar: View {
                 }
             }
             // Everything above the list, which names no workspace either: the tab goes to the
-            // front, and comes out of the workspace it was in.
+            // front, and comes out of the workspace it was in. The run is mostly air — the
+            // header's buttons, the rule under them, an update card — so the shape is what makes
+            // the whole of it a place a row can be put down, rather than the handful of pixels
+            // its controls happen to cover.
+            .contentShape(Rectangle())
             .onDrop(of: [VerticalTabDragState.pasteboardType],
                     delegate: VerticalTabEdgeDropDelegate(drag: drag,
                                                           owner: ObjectIdentifier(owner),
@@ -641,6 +653,9 @@ struct VerticalTabsSidebar: View {
                     UsagePanel(palette: palette)
                 }
             }
+            // The chips and the panels stand in this run with room between them, so the shape is
+            // what makes the whole of it a place rather than the cards drawn in it.
+            .contentShape(Rectangle())
             .onDrop(of: [VerticalTabDragState.pasteboardType],
                     delegate: VerticalTabEdgeDropDelegate(drag: drag,
                                                           owner: ObjectIdentifier(owner),
@@ -912,12 +927,13 @@ struct VerticalTabsSidebar: View {
     /// drawn as one of them again. Pulling it out is a thing the drop does, not a place it
     /// lands on.
     ///
-    /// A tab that belongs to no workspace is left where the sidebar already draws it: **Other**
-    /// is the one place such a tab has, and pulling it out of there would only carry it up
-    /// among the workspaces, which says nothing true about it.
+    /// A tab that belongs to no workspace is taken out of **Other** the same way. Other is drawn
+    /// after every workspace, so this is the only way a session with no folder of its own can be
+    /// put anywhere above them at all: left in it, the tab is drawn back at the bottom the moment
+    /// it lands. Its row's menu offers to put it back under Other, which is where it would be
+    /// drawn again — this is a place the user chose for it, not a claim about its folder.
     private func pullDraggedTab(_ id: ObjectIdentifier, at index: Int) {
-        if let controller = model.tabs.first(where: { $0.id == id })?.controller,
-           workspaces.section(for: controller)?.id != VerticalTabsWorkspaces.otherID {
+        if let controller = model.tabs.first(where: { $0.id == id })?.controller {
             workspaces.detach(controller)
         }
         moveDraggedTab(id, at: index)
@@ -1010,6 +1026,11 @@ final class VerticalTabDragState: ObservableObject {
     /// rows inside it. A drop there puts the tab at the top of that project's tabs, and the
     /// block draws the line at its top edge where the tab would go.
     @Published private(set) var block: String?
+    /// The place that line marks, in the tab order. It is kept because the block is drawn as one
+    /// thing and the space around it belongs to no row: a drop can land there that no row ever
+    /// reported, and the line the user was shown is the promise the drop has to keep. See
+    /// `VerticalTabListDropDelegate.destination`.
+    @Published private(set) var blockTop: Int?
 
     /// Where the dragged tab sits in the tab order. Every drop update needs it, so it is
     /// remembered here rather than searched for each time.
@@ -1022,6 +1043,7 @@ final class VerticalTabDragState: ObservableObject {
         target = nil
         after = false
         block = nil
+        blockTop = nil
     }
 
     func hover(_ index: Int, after: Bool) {
@@ -1029,15 +1051,17 @@ final class VerticalTabDragState: ObservableObject {
         target = index
         self.after = after
         block = nil
+        blockTop = nil
     }
 
     /// The drag is over a project's block rather than one of the rows in it, which no row
     /// can report: nothing there says where the tab would land but the top of the block.
-    func hover(block: String) {
-        guard target != nil || self.block != block else { return }
+    func hover(block: String, top: Int) {
+        guard target != nil || self.block != block || self.blockTop != top else { return }
         target = nil
         after = false
         self.block = block
+        blockTop = top
     }
 
     func clearHover() {
@@ -1045,6 +1069,7 @@ final class VerticalTabDragState: ObservableObject {
         target = nil
         after = false
         block = nil
+        blockTop = nil
     }
 
     func end() {
@@ -1054,6 +1079,7 @@ final class VerticalTabDragState: ObservableObject {
         target = nil
         after = false
         block = nil
+        blockTop = nil
     }
 
     /// The drop has been taken: the row is no longer lifted, but the gold line stays where it
@@ -1270,6 +1296,11 @@ private struct VerticalTabDragRow<Content: View>: View {
             .animation(.easeOut(duration: 0.1), value: landsAbove)
             .animation(.easeOut(duration: 0.1), value: landsBelow)
             .animation(.easeOut(duration: 0.12), value: isDragged)
+            // The card is inset from the list by a few points, and those points are the row's as
+            // far as a drop is concerned: the row is what a pointer there is nearest to, and the
+            // line it draws is the promise the drop has to keep. Left to the list below, a
+            // pointer that strayed into the inset would be read as nowhere in particular.
+            .contentShape(Rectangle())
             // What is carried under the pointer is the row itself, at a sidebar's width.
             // Without it macOS makes the drag image out of the window the row was picked up in —
             // a 1512×982 picture of the whole window, one layer, composited for the whole drag.
@@ -1385,14 +1416,16 @@ private struct VerticalTabListDropDelegate: DropDelegate {
 
     private var isOurs: Bool { drag.owner == owner && drag.origin != nil }
 
-    /// Where the drop would put the tab. The row the pointer was last over names it, and the
-    /// room below the last row names the end of the list — which is the case this has to get
-    /// right: a tab carried down past the bottom of the list has its own row as the last one
-    /// the pointer crossed, and a row reports nowhere to land while the drag is over the tab it
-    /// is carrying, so there is nothing else left to read the place off.
+    /// Where the drop would put the tab. The row the pointer was last over names it; failing
+    /// that the space around a block names the top of that block, which is where the block drew
+    /// its line and so what the drop was seen to promise; and failing that the end of the list,
+    /// which is what the room below the last row is — a tab carried down past the bottom of the
+    /// list has its own row as the last one the pointer crossed, and a row reports nowhere to
+    /// land while the drag is over the tab it is carrying, so there is nothing else left to read
+    /// the place off.
     private var destination: Int? {
         guard count > 0 else { return nil }
-        return drag.target ?? count - 1
+        return drag.target ?? drag.blockTop ?? count - 1
     }
 
     func validateDrop(info: DropInfo) -> Bool { isOurs && destination != nil }
@@ -1476,10 +1509,10 @@ struct VerticalTabBlockDropDelegate: DropDelegate {
 
     func validateDrop(info: DropInfo) -> Bool { ours }
 
-    func dropEntered(info: DropInfo) { drag.hover(block: block) }
+    func dropEntered(info: DropInfo) { drag.hover(block: block, top: top) }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
-        drag.hover(block: block)
+        drag.hover(block: block, top: top)
         return DropProposal(operation: .move)
     }
 
