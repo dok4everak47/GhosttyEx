@@ -522,10 +522,12 @@ struct VerticalTabsSidebar: View {
                                         : { [section] id, index in
                                             dropOnBlock(id, onto: section.id, at: index)
                                         }
-                                    // Where the block's tabs start in the tab order, which is
+                                    // Where the block's rows start in the tab order, which is
                                     // the place a drop on the block names, counting from 1 the
-                                    // way the rest of this list does.
-                                    let first = members.first?.0 ?? 1
+                                    // way the rest of this list does. A workspace with no rows
+                                    // drawn has none to read it from, so it comes from where
+                                    // its tabs are.
+                                    let first = members.first?.0 ?? sectionOffset(section)
                                     // Read once for the whole section rather than in each
                                     // row: it walks the folder up to its repository.
                                     let sectionColor = section.color
@@ -579,7 +581,7 @@ struct VerticalTabsSidebar: View {
                                             delegate: VerticalTabBlockDropDelegate(drag: drag,
                                                                                    owner: ObjectIdentifier(owner),
                                                                                    block: section.id,
-                                                                                   top: first - 1,
+                                                                                   top: max(0, first - 1),
                                                                                    drop: pullDraggedTab))
                                     .transition(.asymmetric(insertion: .scale(scale: 0.97, anchor: .top).combined(with: .opacity),
                                                             removal: .opacity))
@@ -682,6 +684,10 @@ struct VerticalTabsSidebar: View {
         // The tabs that belong to no workspace, kept back so their section can be drawn last.
         var other: [(Int, VerticalTabEntry)] = []
         var otherSection: VerticalTabsWorkspaces.Section?
+        // Workspaces that have tabs open in this window and yet no row inside them, because
+        // every one of those tabs has been pulled out. They are drawn as a header holding
+        // nothing, further down; see below.
+        var pulledApart: Set<String> = []
         // A tab the user dragged away from its workspace's tabs is an ordinary row, and no
         // longer counts as one of the workspace's — otherwise the section would gather it
         // straight back to where it was dragged from. See
@@ -691,15 +697,24 @@ struct VerticalTabsSidebar: View {
         }
         for (offset, entry) in model.tabs.enumerated() {
             guard let controller = entry.controller,
-                  !workspaces.isDetached(controller),
                   let section = workspaces.section(for: controller) else {
                 result.append(.tab(offset + 1, entry))
                 continue
             }
+            let detached = workspaces.isDetached(controller)
             // "Other" holds whatever is left, and is drawn after every workspace.
             if section.isImplicit {
+                guard !detached else {
+                    result.append(.tab(offset + 1, entry))
+                    continue
+                }
                 otherSection = section
                 other.append((offset + 1, entry))
+                continue
+            }
+            if detached {
+                pulledApart.insert(section.id)
+                result.append(.tab(offset + 1, entry))
                 continue
             }
             guard placed.insert(section.id).inserted else { continue }
@@ -707,6 +722,14 @@ struct VerticalTabsSidebar: View {
                 $0.element.controller.map { section.members.contains(ObjectIdentifier($0)) } ?? false
             }
             result.append(.section(section, members.map { ($0.offset + 1, $0.element) }))
+        }
+        // A workspace whose tabs here have all been pulled out is still a workspace, and its
+        // header is where it is named, folded, deleted — and the one place a tab can be dropped
+        // to put it back in. Left out, the whole workspace would leave the sidebar the moment
+        // its last tab came out, taking with it the only thing there was to drop a tab onto.
+        for section in workspaces.sections
+        where !section.isImplicit && !placed.contains(section.id) && pulledApart.contains(section.id) {
+            result.append(.section(section, []))
         }
         // With no workspace made yet there is nothing for them to be left out of, so they
         // stand on their own under the Sessions label rather than under a heading that says
@@ -717,6 +740,16 @@ struct VerticalTabsSidebar: View {
             result.append(contentsOf: other.map { .tab($0.0, $0.1) })
         }
         return result
+    }
+
+    /// The place in the tab order a workspace's earliest tab holds, counting from 1 the way
+    /// this list does, or 0 when none of its tabs is open in this window. A workspace drawn
+    /// with no rows of its own has none to read the place off, so the block is drawn — and a
+    /// drop on it lands — where its tabs are.
+    private func sectionOffset(_ section: VerticalTabsWorkspaces.Section) -> Int {
+        model.tabs.enumerated().first { _, entry in
+            entry.controller.map { section.members.contains(ObjectIdentifier($0)) } ?? false
+        }.map { $0.offset + 1 } ?? 0
     }
 
     private func tabGroup(_ controller: TerminalController, entry: VerticalTabEntry, index: Int,

@@ -358,17 +358,23 @@ final class VerticalTabsWorkspaces: ObservableObject {
     }
 
     /// The canonical folder -> workspace lookup, rebuilt whenever the workspaces change.
+    /// Sorted by id, so that two workspaces that claim the same folder — hand-edited into the
+    /// file, since nothing in the app makes them — always resolve to the same one of the two.
     private func rebuildRoots() {
         byRoot = [:]
-        for workspace in workspaces.values {
+        for workspace in workspaces.values.sorted(by: { $0.id < $1.id }) {
             for root in workspace.roots where byRoot[root] == nil { byRoot[root] = workspace.id }
         }
     }
 
     private func recompute() {
-        // A closed tab's identifier can be handed to a new object, so a pulled-out tab that
-        // has gone must not be remembered.
-        let live = Set(Self.openControllers.map { ObjectIdentifier($0) })
+        // A closed tab's identifier can be handed to a new object, so what is remembered per
+        // tab has to be forgotten when the tab goes. What "goes" means here is a controller the
+        // app no longer has at all — and not one whose window is merely off screen, which is
+        // what `openControllers` says: hiding the app, or leaving a window on another Space,
+        // takes its window off screen, and forgetting a tab's pull-out or its filing every time
+        // that happened would undo the gesture for no reason at all.
+        let live = Set(TerminalController.all.map { ObjectIdentifier($0) })
         if !detached.isSubset(of: live) { detached.formIntersection(live) }
         if assigned.keys.contains(where: { !live.contains($0) }) {
             assigned = assigned.filter { live.contains($0.key) }
@@ -376,7 +382,10 @@ final class VerticalTabsWorkspaces: ObservableObject {
 
         var members: [String: Set<ObjectIdentifier>] = [:]
         var agents: [String: Int] = [:]
-        for controller in Self.openControllers {
+        // Read once per pass: it filters every window the app has, and the pass runs several
+        // times a second while an agent works.
+        let open = Self.openControllers
+        for controller in open {
             let id = ObjectIdentifier(controller)
             // A workspace is made by hand — see `create` — so a tab whose folder belongs to
             // none of them is drawn on its own, under "Other", until one is made for it.
@@ -426,9 +435,39 @@ final class VerticalTabsWorkspaces: ObservableObject {
         defaults.set(legacy, forKey: collapsedKey)
     }
 
+    /// The file as it is read: one workspace at a time, so one that will not decode — an entry
+    /// written by an older version of the app, or a hand-edited file — takes only itself with
+    /// it. Workspaces with no folder at all are left out too: with no root, no tab can ever
+    /// belong to one, so it would sit in the file for good with nothing drawn and no way to
+    /// select it and delete it.
+    private struct Lenient: Decodable {
+        var workspaces: [Workspace] = []
+
+        private struct One: Decodable {
+            let workspace: Workspace?
+            init(from decoder: Decoder) throws { workspace = try? Workspace(from: decoder) }
+        }
+
+        private enum CodingKeys: String, CodingKey { case workspaces }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            let items = try container.decodeIfPresent([One].self, forKey: .workspaces) ?? []
+            workspaces = items.compactMap(\.workspace).filter { !$0.roots.isEmpty }
+        }
+    }
+
     private func load() {
-        guard let data = try? Data(contentsOf: Self.fileURL),
-              let stored = try? JSONDecoder().decode(Stored.self, from: data) else { return }
+        guard let data = try? Data(contentsOf: Self.fileURL) else { return }
+        guard let stored = try? JSONDecoder().decode(Lenient.self, from: data) else {
+            // Nothing is read from it, but the file is not written over either: the workspaces
+            // are still in there somewhere, and the next `save()` — which the first change
+            // after this reaches — would put the empty list in their place.
+            let damaged = Self.fileURL.appendingPathExtension("damaged")
+            try? FileManager.default.removeItem(at: damaged)
+            try? FileManager.default.copyItem(at: Self.fileURL, to: damaged)
+            return
+        }
         for workspace in stored.workspaces where workspaces[workspace.id] == nil {
             workspaces[workspace.id] = workspace
             for root in workspace.roots where byRoot[root] == nil { byRoot[root] = workspace.id }
