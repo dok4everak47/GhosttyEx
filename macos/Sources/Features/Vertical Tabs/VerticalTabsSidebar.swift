@@ -742,9 +742,9 @@ struct VerticalTabsSidebar: View {
 
     /// Puts the dragged tab where the row it was dropped on sits.
     private func moveDraggedTab(_ id: ObjectIdentifier, at index: Int) {
-        // The drag ends here, where the move is made, rather than at the drop: the slot the
-        // drop opened stays open until the tab has moved into it, so that the list lands in one
-        // motion instead of coming apart and then sliding back together.
+        // The drag ends here, where the move is made, rather than at the drop: the gold line
+        // stays where it is until the tab has actually moved to it, so the row lands under the
+        // line rather than the line going out a moment before the row arrives.
         defer { drag.end() }
         let tabs = model.tabs
         guard let controller = tabs.first(where: { $0.id == id })?.controller else { return }
@@ -774,8 +774,8 @@ struct VerticalTabsSidebar: View {
             VerticalTabsActions.reorder(controller, to: index)
         }
         // The new order is handed to the rows here, by hand, so that it reaches them in the
-        // same turn the slot closes in. The notification below is debounced, and a frame
-        // between the slot closing and the row moving is exactly the second move that this is
+        // same turn the drag is ended in. The notification below is debounced, and a frame
+        // between the drag ending and the row moving is exactly the second move that this is
         // meant to avoid. It is still posted for the other windows sharing the tab group, whose
         // sidebars have models of their own.
         model.refresh()
@@ -969,10 +969,10 @@ final class VerticalTabDragState: ObservableObject {
         block = nil
     }
 
-    /// The drop has been taken: the row is no longer lifted, but the slot it opened and the
-    /// line over it stay open until the tab has moved into them, which is what `moveDraggedTab`
-    /// ends the drag for. Closing the slot here instead would take the list apart and then slide
-    /// it back together — the row would land in two moves where it should land in one.
+    /// The drop has been taken: the row is no longer lifted, but the gold line stays where it
+    /// is until the tab has moved to it, which is what `moveDraggedTab` ends the drag for. The
+    /// line going out here, a turn before the row arrives under it, reads as the drop having
+    /// missed.
     func land() {
         dragging = nil
         origin = nil
@@ -1122,8 +1122,8 @@ private struct SidebarScrollFinder: NSViewRepresentable {
 /// line said it would.
 private let rowGutter: CGFloat = 3
 
-/// One draggable row: the tab's card, plus the drag image, the lifted look, and the slot
-/// that opens where the tab would land.
+/// One draggable row: the tab's card, plus the drag image, the lifted look, and the gold line
+/// showing where the tab would land.
 private struct VerticalTabDragRow<Content: View>: View {
     @ObservedObject var drag: VerticalTabDragState
     /// The sidebar this row belongs to; see `VerticalTabDragState.owner`.
@@ -1136,9 +1136,6 @@ private struct VerticalTabDragRow<Content: View>: View {
     /// Built by the sidebar and passed as a value: re-rendering this wrapper for a change in
     /// the drag must not rebuild the tab's panes.
     let content: Content
-
-    /// How far the list opens up at the edge the tab would land on.
-    private static var slot: CGFloat { 16 }
 
     private var mine: Bool { drag.owner == owner }
     private var isDragged: Bool { mine && drag.dragging == id }
@@ -1158,11 +1155,19 @@ private struct VerticalTabDragRow<Content: View>: View {
     }
 
     var body: some View {
-        // The gutter is added on the landing side as well as the leading one, which keeps the
-        // line centred in the room the slot opens up.
+        // Nothing here moves for a drag. The place the tab will land is told by the gold line
+        // and nothing else, and the row keeps the room it had, so the list is still while a
+        // row is carried across it.
+        //
+        // The row used to open a slot — an extra 16 points of padding on the landing side —
+        // and the list had to be laid out again for it on nearly every mouse move. What the
+        // rows sit in pays for that: a workspace's block, its header and the bracket down its
+        // side are all drawn around them, so a slot opening anywhere inside a workspace grew
+        // the block, moved its name, and put everything below it 16 points further down, and
+        // closing it put them all back. Crossing from a row to the header and back did it
+        // again, several times a second, which is what made the sidebar jump.
         content
-            .padding(.top, rowGutter + (landsAbove ? Self.slot : 0))
-            .padding(.bottom, rowGutter + (landsBelow ? Self.slot : 0))
+            .padding(.vertical, rowGutter)
             .overlay(alignment: .top) { line.opacity(landsAbove ? 1 : 0) }
             .overlay(alignment: .bottom) { line.opacity(landsBelow ? 1 : 0) }
             .opacity(isDragged ? 0.45 : 1)
@@ -1170,10 +1175,9 @@ private struct VerticalTabDragRow<Content: View>: View {
             // Each of these names something only this row does, so a drag over another row
             // leaves this one out of it. With the drag's own `target` as the value instead,
             // every row in the list has its animation read again on every mouse move that
-            // changes it, which is most of them. The spring is the interactive one: it is
-            // made for following a pointer.
-            .animation(.interactiveSpring(response: 0.2, dampingFraction: 0.86), value: landsAbove)
-            .animation(.interactiveSpring(response: 0.2, dampingFraction: 0.86), value: landsBelow)
+            // changes it, which is most of them.
+            .animation(.easeOut(duration: 0.1), value: landsAbove)
+            .animation(.easeOut(duration: 0.1), value: landsBelow)
             .animation(.easeOut(duration: 0.12), value: isDragged)
             .onDrag {
                 drag.begin(id, in: owner, at: index)
@@ -1185,10 +1189,10 @@ private struct VerticalTabDragRow<Content: View>: View {
                     delegate: VerticalTabDropDelegate(drag: drag, owner: owner, index: index, drop: drop))
     }
 
-    /// The gold line in the middle of the slot, marking where the tab will land.
+    /// The gold line across the edge the tab will land on. It sits in the gutter the two rows
+    /// share rather than in room made for it, so it falls exactly where the tab goes.
     private var line: some View {
         VerticalTabDropLine()
-            .padding(.vertical, (Self.slot - 2) / 2)
     }
 }
 
@@ -1219,7 +1223,7 @@ private struct VerticalTabBlockLine: View {
 }
 
 /// Reorders tabs when a row is dragged onto another row. The tab takes the dropped-on row's
-/// place and lands on the side the drag came from, which is the side the slot opens on.
+/// place and lands on the side the drag came from, which is the side the gold line is drawn on.
 private struct VerticalTabDropDelegate: DropDelegate {
     let drag: VerticalTabDragState
     let owner: ObjectIdentifier
@@ -1249,8 +1253,8 @@ private struct VerticalTabDropDelegate: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         guard let id = drag.dragging, let from = source else { drag.end(); return false }
         guard from != index else { drag.end(); return true }  // put back where it started
-        // The slot and the line over it stay open until the tab has moved into them, so the
-        // list lands in one motion: the drag is ended where the move is made, not here.
+        // The drag is ended where the move is made, not here, so the line stays over the place
+        // the tab is going until it has actually gone there.
         drag.land()
         // Reordering a tab group makes AppKit re-parent the window's views, which takes long
         // enough to hold up the drag's own teardown if it runs here, inside the drag
@@ -1285,7 +1289,7 @@ private struct VerticalTabListDropDelegate: DropDelegate {
     func performDrop(info: DropInfo) -> Bool {
         guard let id = drag.dragging, let from = drag.origin else { drag.end(); return false }
         guard let to = drag.target, to != from else { drag.end(); return true }  // nowhere to land
-        drag.land()  // the slot stays open where the tab is going: see `VerticalTabDragState`
+        drag.land()  // the line stays over that row until the tab is there: see `VerticalTabDragState`
         DispatchQueue.main.async { drop(id, to) }
         return true
     }
@@ -1321,7 +1325,7 @@ private struct VerticalTabEdgeDropDelegate: DropDelegate {
             return false
         }
         guard to != from else { drag.end(); return true }  // already at that end: nothing to do
-        // Nothing here drew the place this drop names, so there is no slot to hold open.
+        // Nothing here drew the place this drop names, so there is no line left hanging over it.
         drag.end()
         DispatchQueue.main.async { drop(id, to) }
         return true
