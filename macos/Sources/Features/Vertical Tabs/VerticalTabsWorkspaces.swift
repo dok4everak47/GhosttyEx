@@ -317,10 +317,37 @@ final class VerticalTabsWorkspaces: ObservableObject {
     /// its folder — which is now no workspace at all.
     func delete(_ id: String) {
         guard workspaces.removeValue(forKey: id) != nil else { return }
+        // Without this the filing would outlive the workspace: `recompute` skips it while
+        // there is nothing to file into, but a workspace made again from the same folder
+        // takes the same id, and the tab would turn up in it unbidden.
+        for tab in Array(assigned.filter { $0.value == id }.keys) { assigned.removeValue(forKey: tab) }
         // Before `recompute`, which looks folders up: a root left pointing at a workspace that
         // has gone would put its tabs in no section at all, and no section draws them.
         rebuildRoots()
         recompute()
+    }
+
+    /// Merges the workspace a tab is drawn in into another, which is what dropping the tab on
+    /// a workspace's header does. The target keeps its name and takes on the other's folders,
+    /// so the tabs working in them are drawn in the target from then on, and the other goes.
+    ///
+    /// False, with nothing merged, for a tab that is already in the target and for one that
+    /// belongs to no workspace at all: there is nothing for it to bring with it.
+    @discardableResult
+    func mergeWorkspace(of controller: TerminalController, into workspace: String) -> Bool {
+        guard let from = tabSection[ObjectIdentifier(controller)], from != Self.otherID,
+              from != workspace,
+              var target = workspaces[workspace], let source = workspaces[from] else { return false }
+        for root in source.roots where !target.roots.contains(root) { target.roots.append(root) }
+        workspaces[workspace] = target
+        // A tab filed by hand in the workspace that is going belongs to the target now.
+        for tab in Array(assigned.filter { $0.value == from }.keys) { assigned[tab] = workspace }
+        workspaces.removeValue(forKey: from)
+        // Which folder belongs to which workspace has changed under both of them, and
+        // `recompute` reads that lookup as it runs.
+        rebuildRoots()
+        recompute()
+        return true
     }
 
     /// The canonical folder -> workspace lookup, rebuilt whenever the workspaces change.

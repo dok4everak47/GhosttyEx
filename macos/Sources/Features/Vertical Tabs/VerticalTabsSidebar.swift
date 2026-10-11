@@ -511,17 +511,26 @@ struct VerticalTabsSidebar: View {
                                     }
                                 case .section(let section, let members):
                                     // A drop on a workspace's own header (or on the whole of
-                                    // it while it's folded) files the tab there, which is the
-                                    // one thing a drop on the block can name. "Other" is not a
-                                    // workspace, so a drop there is an ordinary move.
+                                    // it while it's folded) merges the workspace the tab
+                                    // comes from into this one, which is the one thing a
+                                    // drop on the block can name. "Other" is not a workspace,
+                                    // so a drop there is an ordinary move.
                                     let drop: (ObjectIdentifier, Int) -> Void = section.isImplicit
                                         ? moveDraggedTab
                                         : { [section] id, index in
-                                            fileDraggedTab(id, in: section.id, at: index)
+                                            dropOnBlock(id, onto: section.id, at: index)
                                         }
                                     // Read once for the whole section rather than in each
                                     // row: it walks the folder up to its repository.
                                     let sectionColor = section.color
+                                    // A drop on one of the rows names that row rather than the
+                                    // block: the tab joins the workspace on its own, and the
+                                    // one it came from is left where it is. "Other" is not a
+                                    // workspace to join, so its rows move tabs as every other
+                                    // row does.
+                                    let rowDrop: ((ObjectIdentifier, Int) -> Void)? = section.isImplicit ? nil : { [section] id, index in
+                                        dropInSection(id, onto: section.id, at: index)
+                                    }
                                     VerticalTabsWorkspaceSectionView(
                                         section: section,
                                         controllers: members.compactMap(\.1.controller),
@@ -530,7 +539,9 @@ struct VerticalTabsSidebar: View {
                                         VStack(spacing: 0) {
                                             ForEach(members, id: \.1.id) { index, entry in
                                                 if let controller = entry.controller {
-                                                    tabGroup(controller, entry: entry, index: index, palette: palette, inSection: true, sectionColor: sectionColor)
+                                                    tabGroup(controller, entry: entry, index: index, palette: palette, inSection: true,
+                                                             sectionColor: sectionColor,
+                                                             drop: rowDrop)
                                                 }
                                             }
                                         }
@@ -686,7 +697,8 @@ struct VerticalTabsSidebar: View {
 
     private func tabGroup(_ controller: TerminalController, entry: VerticalTabEntry, index: Int,
                           palette: VerticalTabsPalette, inSection: Bool = false,
-                          sectionColor: Color? = nil) -> some View {
+                          sectionColor: Color? = nil,
+                          drop: ((ObjectIdentifier, Int) -> Void)? = nil) -> some View {
         // Only looked up for a tab the user has pulled out of its workspace, so the
         // row can offer to put it back. Both calls are lookups; nothing is computed unless
         // the tab is actually out.
@@ -707,7 +719,9 @@ struct VerticalTabsSidebar: View {
             // The row's place in the tab order, which is what a drop moves the tab to.
             index: index - 1,
             id: entry.id,
-            drop: moveDraggedTab
+            // A row inside a workspace takes a tab from somewhere else into it, which is
+            // what `dropInSection` is for; every other row moves the tab in the tab order.
+            drop: drop ?? moveDraggedTab
         ) {
             VerticalTabGroup(
                 controller: controller,
@@ -734,6 +748,11 @@ struct VerticalTabsSidebar: View {
         defer { drag.end() }
         let tabs = model.tabs
         guard let controller = tabs.first(where: { $0.id == id })?.controller else { return }
+        // Picked up and put straight back where it already was. Every drop that means only a
+        // move refuses this before it gets here; a drop on a workspace's block has to ask,
+        // because the same drop is also how a workspace is merged into another, and settling
+        // the tab's place over a move that never happened would be a change it didn't ask for.
+        guard tabs.firstIndex(where: { $0.id == id }) != index else { return }
         // Where a tab lands also settles the two things a tab carries beyond its place: the
         // run of pinned tabs at the top of the list, and the workspace section it may have
         // been dragged out of. Both are read off the order as it stands, before the move.
@@ -763,10 +782,9 @@ struct VerticalTabsSidebar: View {
         VerticalTabs.setNeedsRefresh()
     }
 
-    /// Puts the dragged tab in a workspace, where a drop on that workspace's header lands, and
-    /// moves it to the place the drop named. The tab is filed by hand, so it stays there
-    /// whatever folder it is in; its row's menu puts it back with its folder. See
-    /// `VerticalTabsWorkspaces.assign`.
+    /// Puts the dragged tab in a workspace by hand, without the workspace it came from coming
+    /// along, and moves it to the place the drop named. The tab stays there whatever folder it
+    /// is in; its row's menu puts it back. See `VerticalTabsWorkspaces.assign`.
     private func fileDraggedTab(_ id: ObjectIdentifier, in workspace: String, at index: Int) {
         defer { drag.end() }
         guard let controller = model.tabs.first(where: { $0.id == id })?.controller else { return }
@@ -774,6 +792,48 @@ struct VerticalTabsSidebar: View {
         VerticalTabsActions.reorder(controller, to: index)
         model.refresh()
         VerticalTabs.setNeedsRefresh()
+    }
+
+    /// A drop on a workspace's block: its header, its status line, or the whole of it while it
+    /// is folded — the places inside it no row covers.
+    ///
+    /// A tab drawn in another workspace brings that workspace with it, which is the one thing a
+    /// drop here can name, and the two become one under this workspace's name. A tab drawn in
+    /// this one is moving within it and moves as it always has. One drawn on its own belongs to
+    /// no workspace, so it has nothing to bring and joins this one by itself.
+    private func dropOnBlock(_ id: ObjectIdentifier, onto workspace: String, at index: Int) {
+        guard let controller = model.tabs.first(where: { $0.id == id })?.controller else {
+            drag.end()
+            return
+        }
+        let workspaces = VerticalTabsWorkspaces.shared
+        let from = workspaces.section(for: controller)?.id
+        guard from != workspace, from != nil else {
+            moveDraggedTab(id, at: index)
+            return
+        }
+        guard from != VerticalTabsWorkspaces.otherID,
+              workspaces.mergeWorkspace(of: controller, into: workspace) else {
+            fileDraggedTab(id, in: workspace, at: index)
+            return
+        }
+        defer { drag.end() }
+        VerticalTabsActions.reorder(controller, to: index)
+        model.refresh()
+        VerticalTabs.setNeedsRefresh()
+    }
+
+    /// A drop on a row inside a workspace. A tab that is already drawn in that workspace is
+    /// moving within it, and moves as it always has; one drawn anywhere else — in another
+    /// workspace, or on its own outside every one — joins this workspace by itself, leaving
+    /// whatever it came from where it is.
+    private func dropInSection(_ id: ObjectIdentifier, onto workspace: String, at index: Int) {
+        guard let controller = model.tabs.first(where: { $0.id == id })?.controller,
+              workspaces.section(for: controller)?.id != workspace else {
+            moveDraggedTab(id, at: index)
+            return
+        }
+        fileDraggedTab(id, in: workspace, at: index)
     }
 
     /// The tabs to move, and where, to leave the tab order as `want` reads: the tabs already
@@ -1300,7 +1360,10 @@ private struct VerticalTabBlockDropDelegate: DropDelegate {
         // the time the tab lands. The tab being at that place already is a tab already at the
         // top of the block, and one just above it has nowhere nearer to go.
         let to = top - (from < top ? 1 : 0)
-        guard to != from else { drag.end(); return true }
+        // Where an ordinary move has nowhere to go, the drop is still taken: on a workspace's
+        // block it is how one workspace is merged into another, and the tab that sits right
+        // above the block — the last of the workspace above it — is the one a user picks up
+        // to do that. `moveDraggedTab` sorts out the case where there really is nothing to do.
         drag.land()  // the line at the top of the block stays up while the tab moves there
         DispatchQueue.main.async { drop(id, to) }
         return true
