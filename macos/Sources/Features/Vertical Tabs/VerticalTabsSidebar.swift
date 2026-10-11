@@ -514,12 +514,16 @@ struct VerticalTabsSidebar: View {
                                     // it while it's folded) merges the workspace the tab
                                     // comes from into this one, which is the one thing a
                                     // drop on the block can name. "Other" is not a workspace,
-                                    // so a drop there is an ordinary move.
+                                    // so a drop there is an ordinary move to the top of it.
                                     let drop: (ObjectIdentifier, Int) -> Void = section.isImplicit
                                         ? moveDraggedTab
                                         : { [section] id, index in
                                             dropOnBlock(id, onto: section.id, at: index)
                                         }
+                                    // Where the block's tabs start in the tab order, which is
+                                    // the place a drop on the block names, counting from 1 the
+                                    // way the rest of this list does.
+                                    let first = members.first?.0 ?? 1
                                     // Read once for the whole section rather than in each
                                     // row: it walks the folder up to its repository.
                                     let sectionColor = section.color
@@ -534,7 +538,9 @@ struct VerticalTabsSidebar: View {
                                     VerticalTabsWorkspaceSectionView(
                                         section: section,
                                         controllers: members.compactMap(\.1.controller),
-                                        owner: owner
+                                        owner: owner,
+                                        block: drop,
+                                        first: first
                                     ) {
                                         VStack(spacing: 0) {
                                             ForEach(members, id: \.1.id) { index, entry in
@@ -546,11 +552,15 @@ struct VerticalTabsSidebar: View {
                                             }
                                         }
                                     }
-                                    // The block's own drop target, which the rows inside it
-                                    // take precedence over: its header, its status line, and
-                                    // the whole of it while it's folded are places no row
-                                    // covers, and the top of the workspace's tabs is the one
-                                    // place a drop on the block can name.
+                                    // The block's whole frame is a drop target too, so that the
+                                    // parts of it no row covers — the gaps between rows, the
+                                    // strip the block's inset leaves on the left — name this
+                                    // workspace rather than falling to the list below, which
+                                    // only knows how to move a tab in the tab order. Rows
+                                    // inside it are deeper, and still take their own drops.
+                                    .contentShape(Rectangle())
+                                    // The line at the top of the block, which is where a drop
+                                    // on the block puts the tab.
                                     .overlay(alignment: .top) {
                                         VerticalTabBlockLine(drag: drag,
                                                              owner: ObjectIdentifier(owner),
@@ -560,7 +570,7 @@ struct VerticalTabsSidebar: View {
                                             delegate: VerticalTabBlockDropDelegate(drag: drag,
                                                                                    owner: ObjectIdentifier(owner),
                                                                                    block: section.id,
-                                                                                   top: (members.first?.0 ?? 1) - 1,
+                                                                                   top: first - 1,
                                                                                    drop: drop))
                                     .transition(.asymmetric(insertion: .scale(scale: 0.97, anchor: .top).combined(with: .opacity),
                                                             removal: .opacity))
@@ -1332,16 +1342,21 @@ private struct VerticalTabEdgeDropDelegate: DropDelegate {
     }
 }
 
-/// Takes a drop that lands on a project's block rather than on one of the rows inside it: its
-/// header, its status line, or the whole of it while it's folded. The tab goes to the top of
-/// that project's tabs, which is the one place a drop on the block can name — the block is
-/// drawn as one thing, wherever its earliest tab sits in the tab order.
-private struct VerticalTabBlockDropDelegate: DropDelegate {
+/// Takes a drop that lands on a workspace's block rather than on one of the rows inside it:
+/// its header, the strip the block's inset leaves on the left, and the gaps between its rows.
+/// The tab goes to the top of that workspace's tabs, which is the one place a drop on the
+/// block can name — the block is drawn as one thing, wherever its earliest tab sits in the
+/// tab order.
+///
+/// The block's header carries one of these of its own, deeper than the block's: a target a
+/// whole block carries is not reached over a header. Both name the same place, and the second
+/// of the two to be told about a drop finds the drag already over.
+struct VerticalTabBlockDropDelegate: DropDelegate {
     let drag: VerticalTabDragState
     let owner: ObjectIdentifier
-    /// The project whose block this is.
+    /// The workspace whose block this is.
     let block: String
-    /// The place in the tab order the project's earliest tab holds, which is where the block
+    /// The place in the tab order the workspace's earliest tab holds, which is where the block
     /// is drawn: the drop puts the tab at the top of it.
     let top: Int
     let drop: (ObjectIdentifier, Int) -> Void

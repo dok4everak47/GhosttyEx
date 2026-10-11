@@ -470,6 +470,13 @@ struct VerticalTabsWorkspaceSectionView<Content: View>: View {
     let section: VerticalTabsWorkspaces.Section
     let controllers: [TerminalController]
     let owner: TerminalController
+    /// What a drop on this block does — the tab, and the place in the tab order the drop
+    /// named. The sidebar owns it, since this view knows the block and nothing about the
+    /// workspaces a drop may bring together.
+    let block: (ObjectIdentifier, Int) -> Void
+    /// The place in the tab order the workspace's first tab holds, counting from 1 the way the
+    /// sidebar's own list does, which is where a drop on the block puts the tab.
+    let first: Int
     @ViewBuilder let content: () -> Content
 
     @AppStorage(VerticalTabsWorkspaces.collapsedKey) private var collapsedList = ""
@@ -531,6 +538,21 @@ struct VerticalTabsWorkspaceSectionView<Content: View>: View {
             }
             Button(collapsed ? "Show Tabs" : "Fold Tabs", action: toggleCollapse)
         }
+        // The block's own drop target, and the one that matters: this is where the sidebar
+        // hands a drop "this workspace" rather than "this row", which is how one workspace is
+        // merged into another.
+        //
+        // It stands on the header itself, and wraps everything the header carries, because a
+        // target a whole block carries is not reached over a header: the drop went past the
+        // block's own target to the list's, which knows only how to move a tab in the tab
+        // order, so dropping a session on a workspace's name read as a reorder and the two
+        // workspaces never came together.
+        .onDrop(of: [VerticalTabDragState.pasteboardType],
+                delegate: VerticalTabBlockDropDelegate(drag: .shared,
+                                                       owner: ObjectIdentifier(owner),
+                                                       block: section.id,
+                                                       top: max(0, first - 1),
+                                                       drop: block))
     }
 
     /// The name, then the row's controls. A double-click folds the workspace, but only on the
