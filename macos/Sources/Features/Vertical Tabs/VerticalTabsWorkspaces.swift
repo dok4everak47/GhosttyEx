@@ -96,6 +96,7 @@ final class VerticalTabsWorkspaces: ObservableObject {
     private init() {
         Self.migrateCollapsedKey()
         load()
+        pruneCollapsed()
 
         let center = NotificationCenter.default
         Publishers.Merge4(
@@ -363,10 +364,63 @@ final class VerticalTabsWorkspaces: ObservableObject {
         // there is nothing to file into, but a workspace made again from the same folder
         // takes the same id, and the tab would turn up in it unbidden.
         for tab in Array(assigned.filter { $0.value == id }.keys) { assigned.removeValue(forKey: tab) }
+        Self.forgetCollapsed(id)
         // Before `recompute`, which looks folders up: a root left pointing at a workspace that
         // has gone would put its tabs in no section at all, and no section draws them.
         rebuildRoots()
         recompute()
+    }
+
+    /// Renames a workspace. What finds a workspace's tabs is its folders, not its name, so
+    /// this changes what the sidebar calls it and nothing else.
+    func rename(_ id: String, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var workspace = workspaces[id], !trimmed.isEmpty, trimmed != workspace.name else { return }
+        workspace.name = trimmed
+        workspaces[id] = workspace
+        recompute()
+    }
+
+    /// What a merge took in, so that it can be given back: the workspace that went, the one
+    /// that took it, and the tabs that were filed by hand in the one that went — filing is
+    /// what a merge has to re-point, and undoing it has to point them back.
+    private struct Merge {
+        let taken: Workspace
+        let into: String
+        let refiled: [ObjectIdentifier]
+    }
+
+    /// The last merge, while it is still the last thing that happened. A merge is the one
+    /// gesture in the sidebar that takes something away — the workspace it takes in is gone,
+    /// its folders belong to another workspace from then on, and nothing offers to make it
+    /// again — so the header of the workspace that took it in offers to put it back.
+    private var lastMerge: Merge?
+
+    /// The workspace whose header can offer to undo the last merge, if there is one.
+    var mergeTarget: String? { lastMerge?.into }
+
+    /// Gives back the workspace a merge took in: it is a workspace again with the folders it
+    /// had, and the tabs that were filed in it by hand are filed in it again.
+    @discardableResult
+    func undoMerge() -> Bool {
+        guard let merge = lastMerge, workspaces[merge.into] != nil else {
+            lastMerge = nil
+            return false
+        }
+        // The folders it brought go back to it. One the target had before the merge is the
+        // target's own and stays — and a target is never left holding none, since it would
+        // then own no folder and no tab could belong to it.
+        if var target = workspaces[merge.into] {
+            let kept = target.roots.filter { !merge.taken.roots.contains($0) }
+            if !kept.isEmpty { target.roots = kept }
+            workspaces[merge.into] = target
+        }
+        workspaces[merge.taken.id] = merge.taken
+        for tab in merge.refiled { assigned[tab] = merge.taken.id }
+        lastMerge = nil
+        rebuildRoots()
+        recompute()
+        return true
     }
 
     /// Merges the workspace a tab is drawn in into another, which is what dropping the tab on
@@ -383,8 +437,12 @@ final class VerticalTabsWorkspaces: ObservableObject {
         for root in source.roots where !target.roots.contains(root) { target.roots.append(root) }
         workspaces[workspace] = target
         // A tab filed by hand in the workspace that is going belongs to the target now.
-        for tab in Array(assigned.filter { $0.value == from }.keys) { assigned[tab] = workspace }
+        let refiled = Array(assigned.filter { $0.value == from }.keys)
+        for tab in refiled { assigned[tab] = workspace }
         workspaces.removeValue(forKey: from)
+        // Kept until the next merge or a rename of the target: see `undoMerge`.
+        lastMerge = Merge(taken: source, into: workspace, refiled: refiled)
+        Self.forgetCollapsed(from)
         // Which folder belongs to which workspace has changed under both of them, and
         // `recompute` reads that lookup as it runs.
         rebuildRoots()
@@ -469,6 +527,27 @@ final class VerticalTabsWorkspaces: ObservableObject {
     }
 
     private struct Stored: Codable { var workspaces: [Workspace] }
+
+    /// Forgets that a workspace was folded shut. A workspace's id is the folder it was made
+    /// from, so a workspace made again from the same folder is made again with the same id —
+    /// and would be drawn folded, with its tabs hidden and nothing to say why.
+    private static func forgetCollapsed(_ id: String) {
+        let defaults = UserDefaults.standard
+        guard let list = defaults.string(forKey: collapsedKey) else { return }
+        let folded = list.split(separator: "\n")
+        guard folded.contains(where: { $0 == id }) else { return }
+        defaults.set(folded.filter { $0 != id }.joined(separator: "\n"), forKey: collapsedKey)
+    }
+
+    /// The same, for a fold remembered for a workspace that is not here at all — deleted from
+    /// the file by hand, or left over from a launch that never came back.
+    private func pruneCollapsed() {
+        let defaults = UserDefaults.standard
+        guard let list = defaults.string(forKey: Self.collapsedKey), !list.isEmpty else { return }
+        let live = Set(workspaces.keys).union([Self.otherID])
+        defaults.set(list.split(separator: "\n").filter { live.contains(String($0)) }
+            .joined(separator: "\n"), forKey: Self.collapsedKey)
+    }
 
     private static func migrateCollapsedKey() {
         let defaults = UserDefaults.standard
@@ -619,6 +698,16 @@ struct VerticalTabsWorkspaceSectionView<Content: View>: View {
                 Button("Open \(section.name) in Code Editor") { EditorPanel.shared.show(from: owner, folder: root) }
                 Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: root)]) }
                 Divider()
+                Button("Rename Workspace…", action: promptRename)
+                // Offered on the workspace that took another one in, and only while that is
+                // still the last thing that happened to it. Merging is the one gesture here
+                // that takes a workspace away, and there is nothing else that gives it back:
+                // its folders belong to this one from then on, so "New Workspace" is not even
+                // offered for them.
+                if VerticalTabsWorkspaces.shared.mergeTarget == section.id {
+                    Button("Undo Merge", action: { VerticalTabsWorkspaces.shared.undoMerge() })
+                }
+                Divider()
                 // The tabs are not closed, and nothing else about them changes: they go back
                 // to being drawn on their own. "New Workspace" can make it again.
                 Button("Delete Workspace") { VerticalTabsWorkspaces.shared.delete(section.id) }
@@ -641,6 +730,20 @@ struct VerticalTabsWorkspaceSectionView<Content: View>: View {
                                                        block: section.id,
                                                        top: max(0, first - 1),
                                                        drop: block))
+    }
+
+    /// Asks for a new name for the workspace, with the one it has in the field to edit.
+    private func promptRename() {
+        let alert = NSAlert()
+        alert.messageText = "Rename Workspace"
+        alert.informativeText = "The folders it holds stay as they are; only the name changes."
+        let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        field.stringValue = section.name
+        alert.accessoryView = field
+        alert.addButton(withTitle: "Rename")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        VerticalTabsWorkspaces.shared.rename(section.id, to: field.stringValue)
     }
 
     /// The name, then the row's controls. A double-click folds the workspace, but only on the
