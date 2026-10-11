@@ -63,6 +63,12 @@ final class VerticalTabsWorkspaces: ObservableObject {
     /// other tabs. Kept for this app session, like the pinned tabs: the tab is still one of the
     /// workspace's, it just isn't drawn inside it any more.
     @Published private(set) var detached: Set<ObjectIdentifier> = []
+    /// Tabs the user filed in a workspace by hand, by dragging them onto it. The folder a tab
+    /// is in decides which workspace it belongs to; this overrides that for the one tab, so a
+    /// session that works nowhere in particular — a shell sitting in the home folder, say — can
+    /// be kept with a workspace all the same. Kept for this app session, like the pinned tabs:
+    /// the next launch works the folder out again.
+    @Published private(set) var assigned: [ObjectIdentifier: String] = [:]
 
     /// The workspaces, by id.
     private(set) var workspaces: [String: Workspace] = [:]
@@ -112,6 +118,41 @@ final class VerticalTabsWorkspaces: ObservableObject {
         let id = ObjectIdentifier(controller)
         guard detached.contains(id) else { return }
         detached.remove(id)
+    }
+
+    /// Whether the tab is drawn where the user put it rather than where its folder would.
+    func isFiled(_ controller: TerminalController) -> Bool {
+        assigned[ObjectIdentifier(controller)] != nil
+    }
+
+    /// The workspace a tab's folder belongs to, or nil for one that has no folder of its own
+    /// and so would be drawn in the "Other" section.
+    func folderWorkspace(for controller: TerminalController) -> Workspace? {
+        guard let membership = Self.membership(of: controller) else { return nil }
+        return workspaceID(for: membership.canonical).flatMap { workspaces[$0] }
+    }
+
+    /// Files a tab in a workspace by hand, which is what dropping a row on a workspace names.
+    /// A tab dropped on the workspace its folder already puts it in is an ordinary move, and
+    /// one dropped elsewhere leaves the folder behind for as long as the app is running.
+    func assign(_ controller: TerminalController, to workspace: String) {
+        let id = ObjectIdentifier(controller)
+        guard workspaces[workspace] != nil else { return }
+        if folderWorkspace(for: controller)?.id == workspace {
+            guard assigned.removeValue(forKey: id) != nil else { return }
+        } else {
+            guard assigned[id] != workspace else { return }
+            assigned[id] = workspace
+            // Filing it puts it back among the workspace's tabs, so it is no longer pulled out.
+            detached.remove(id)
+        }
+        recompute()
+    }
+
+    /// Draws a tab where its folder puts it again.
+    func unassign(_ controller: TerminalController) {
+        guard assigned.removeValue(forKey: ObjectIdentifier(controller)) != nil else { return }
+        recompute()
     }
 
     /// Whether moving `controller` to `index` takes it out of its workspace.
@@ -249,19 +290,26 @@ final class VerticalTabsWorkspaces: ObservableObject {
         // has gone must not be remembered.
         let live = Set(Self.openControllers.map { ObjectIdentifier($0) })
         if !detached.isSubset(of: live) { detached.formIntersection(live) }
+        if assigned.keys.contains(where: { !live.contains($0) }) {
+            assigned = assigned.filter { live.contains($0.key) }
+        }
 
         var members: [String: Set<ObjectIdentifier>] = [:]
         var agents: [String: Int] = [:]
         for controller in Self.openControllers {
             let id = ObjectIdentifier(controller)
-            guard let membership = Self.membership(of: controller) else {
+            let membership = Self.membership(of: controller)
+            // A tab the user filed by hand is drawn there whatever its folder says; one whose
+            // workspace has gone falls back to its folder.
+            let filed = assigned[id].flatMap { workspaces[$0] != nil ? $0 : nil }
+            guard let section = filed ?? membership.map({
+                workspaceID(for: $0.canonical) ?? seed(root: $0.root, canonical: $0.canonical)
+            }) else {
                 members[Self.otherID, default: []].insert(id)
                 continue
             }
-            let section = workspaceID(for: membership.canonical)
-                ?? seed(root: membership.root, canonical: membership.canonical)
             members[section, default: []].insert(id)
-            agents[section, default: 0] += membership.agents
+            agents[section, default: 0] += membership?.agents ?? 0
         }
 
         // Sorted by id so that the list is the same from one pass to the next, and the sidebar
