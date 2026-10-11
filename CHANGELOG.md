@@ -6,6 +6,10 @@ What changed in each GhosttyEXTREME release. Work in progress collects under
 
 ## Unreleased
 
+- **The sidebar is organised by workspace.** Sessions now sit under the folder they work in: one section per workspace, named after the folder, with the workspace's agent count and its working/waiting/done state on the header. A folder you open for the first time gets a section of its own straight away, so a new project appears without being set up first. The sessions that aren't in a folder of their own — a plain shell in your home folder, a Hermes tab — collect at the bottom under **Other**. Fold a section with its chevron, or double-click its header; **Put Back in …** returns a session you have pulled out.
+- Drag a session away from its workspace's other sessions to pull it out of the section, as before with projects: it becomes a row of its own, and stays where you dropped it.
+- **Dev servers now sit with their workspace.** A localhost session used to take a card at the end of the sidebar whatever else was open; it now appears inside the folder it serves, alongside the rest of that workspace's sessions. The Localhost Manager is still the globe button in the sidebar header (⌃⌘L).
+- Workspaces can be turned off in **Settings → Features → Workspaces**, which gives you back the flat list of sessions (and the localhost cards at the bottom).
 - **Drag a session to reorder it.** Sidebar rows can be dragged to a new place in the tab order: the row you picked up lifts, a slot opens where it will land with a gold line in it, and the tab you're on stays selected. The ⋮ menu's Move tab up/down still works.
 - Drop a session on the header to send it to the front, or on anything below the list to send it last. Dropping it anywhere in the sidebar now settles instead of flying back to where you picked it up.
 - Dragging decides pinning and project grouping. A session dropped in among the pinned sessions is pinned, and one dropped below them is unpinned. A session dragged away from its project's other sessions leaves that project's bracket, which it can rejoin from its ⋮ menu.

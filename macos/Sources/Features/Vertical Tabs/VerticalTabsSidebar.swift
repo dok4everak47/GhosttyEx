@@ -434,8 +434,7 @@ struct VerticalTabsSidebar: View {
 
     @AppStorage(VerticalTabs.condensedKey) private var condensed = false
     @ObservedObject private var collapse = VerticalTabsCollapse.shared
-    @ObservedObject private var localhost = LocalhostSessions.shared
-    @ObservedObject private var projects = VerticalTabsProjects.shared
+    @ObservedObject private var workspaces = VerticalTabsWorkspaces.shared
     @ObservedObject private var settings = ExtremeSettings.shared
     /// Scrolls the list when a row is dragged to one of its ends. Held here rather than by the
     /// drag state, because what it scrolls is this sidebar's list. It publishes nothing, so
@@ -458,13 +457,6 @@ struct VerticalTabsSidebar: View {
 
     var body: some View {
         let palette = VerticalTabsPalette(config: config)
-        // Localhost sessions get their own cards at the end, whatever their tab order
-        // (unless the feature is off; then they're ordinary tabs).
-        let localhostOn = settings.isOn(.localhost)
-        let isLocalhost: (VerticalTabEntry) -> Bool = { entry in
-            localhostOn && (entry.controller.map { localhost.session(for: $0) != nil } ?? false)
-        }
-        let localhostTabs = model.tabs.filter(isLocalhost)
 
         VStack(spacing: 0) {
             // The list, and everything above it. A row dropped anywhere up here goes to the
@@ -491,7 +483,7 @@ struct VerticalTabsSidebar: View {
                         // to no row.
                         VStack(alignment: .leading, spacing: 0) {
                             ExtremeSectionLabel("Sessions") {
-                                Text("\(model.tabs.count - localhostTabs.count)")
+                                Text("\(model.tabs.count)")
                                     .font(Extreme.font(10)).foregroundColor(Extreme.dim)
                             }
                             .padding(.horizontal, 12)
@@ -505,23 +497,23 @@ struct VerticalTabsSidebar: View {
                                                                           toFront: true,
                                                                           count: model.tabs.count,
                                                                           drop: moveDraggedTab))
-                            ForEach(items(excluding: isLocalhost)) { item in
+                            ForEach(items()) { item in
                                 switch item {
                                 case .tab(let index, let entry):
                                     if let controller = entry.controller {
                                         tabGroup(controller, entry: entry, index: index, palette: palette)
                                             .transition(.opacity)
                                     }
-                                case .project(let group, let members):
-                                    VerticalTabsProjectGroupView(
-                                        group: group,
+                                case .section(let section, let members):
+                                    VerticalTabsWorkspaceSectionView(
+                                        section: section,
                                         controllers: members.compactMap(\.1.controller),
                                         owner: owner
                                     ) {
                                         VStack(spacing: 0) {
                                             ForEach(members, id: \.1.id) { index, entry in
                                                 if let controller = entry.controller {
-                                                    tabGroup(controller, entry: entry, index: index, palette: palette, inProject: true)
+                                                    tabGroup(controller, entry: entry, index: index, palette: palette, inSection: true)
                                                 }
                                             }
                                         }
@@ -529,17 +521,17 @@ struct VerticalTabsSidebar: View {
                                     // The block's own drop target, which the rows inside it
                                     // take precedence over: its header, its status line, and
                                     // the whole of it while it's folded are places no row
-                                    // covers, and the top of the project's tabs is the one
+                                    // covers, and the top of the workspace's tabs is the one
                                     // place a drop on the block can name.
                                     .overlay(alignment: .top) {
                                         VerticalTabBlockLine(drag: drag,
                                                              owner: ObjectIdentifier(owner),
-                                                             block: group.id)
+                                                             block: section.id)
                                     }
                                     .onDrop(of: [VerticalTabDragState.pasteboardType],
                                             delegate: VerticalTabBlockDropDelegate(drag: drag,
                                                                                    owner: ObjectIdentifier(owner),
-                                                                                   block: group.id,
+                                                                                   block: section.id,
                                                                                    top: (members.first?.0 ?? 1) - 1,
                                                                                    drop: moveDraggedTab))
                                     .transition(.asymmetric(insertion: .scale(scale: 0.97, anchor: .top).combined(with: .opacity),
@@ -581,12 +573,6 @@ struct VerticalTabsSidebar: View {
                     PortsSidebarSection(owner: owner)
                 }
 
-                // Localhost sessions stay in view, whatever else is open.
-                if !localhostTabs.isEmpty {
-                    Rectangle().fill(Extreme.line).frame(height: 1)
-                    LocalhostSidebarSection(entries: localhostTabs, owner: owner)
-                }
-
                 // Agent status needs setting up, or a live test just passed (only then).
                 SetupSidebarChip().padding(.horizontal, 8).padding(.bottom, 6)
 
@@ -612,56 +598,74 @@ struct VerticalTabsSidebar: View {
         .onAppear { Extreme.registerFonts() }
     }
 
-    /// What the list's layout depends on: which groups exist and how many tabs each holds.
+    /// What the list's layout depends on: which workspaces exist and how many tabs each holds.
     private var groupLayout: [String] {
-        projects.groups.values.map { "\($0.id):\($0.members.count)" }.sorted()
+        guard settings.isOn(.workspaces) else { return [] }
+        return workspaces.sections.map { "\($0.id):\($0.members.count)" }.sorted()
     }
 
-    /// One sidebar entry: a tab on its own, or a project's tabs bracketed together.
+    /// One sidebar entry: a tab on its own, or a workspace's tabs gathered together.
     private enum Item: Identifiable {
         case tab(Int, VerticalTabEntry)
-        case project(VerticalTabsProjects.Group, [(Int, VerticalTabEntry)])
+        case section(VerticalTabsWorkspaces.Section, [(Int, VerticalTabEntry)])
 
         var id: String {
             switch self {
             case .tab(_, let entry): return "tab-\(entry.id.hashValue)"
-            case .project(let group, _): return "project-" + group.id
+            case .section(let section, _): return "section-" + section.id
             }
         }
     }
 
-    /// Tabs in order, with each project's tabs gathered where its first tab is.
-    private func items(excluding isLocalhost: (VerticalTabEntry) -> Bool) -> [Item] {
+    /// Tabs in order, with each workspace's tabs gathered where its first tab is and the tabs
+    /// that belong to no workspace collected last.
+    private func items() -> [Item] {
+        // Off, the sidebar is the plain list of tabs it used to be.
+        guard settings.isOn(.workspaces) else {
+            return model.tabs.enumerated().map { .tab($0.offset + 1, $0.element) }
+        }
+
         var result: [Item] = []
         var placed: Set<String> = []
-        let tabs = Array(model.tabs.enumerated()).filter { !isLocalhost($0.element) }
-        for (offset, entry) in tabs {
-            guard let controller = entry.controller else { continue }
-            // A tab the user dragged away from its project's tabs is an ordinary row, and no
-            // longer counts as one of the project's — otherwise the bracket would gather it
-            // straight back to where it was dragged from. See
-            // `VerticalTabsProjects.leavesBracket`.
-            if !projects.isDetached(controller), let group = projects.group(for: controller) {
-                guard placed.insert(group.id).inserted else { continue }
-                let members = tabs.filter {
-                    $0.element.controller.map { member in
-                        group.members.contains(ObjectIdentifier(member)) && !projects.isDetached(member)
-                    } ?? false
-                }
-                result.append(.project(group, members.map { ($0.offset + 1, $0.element) }))
-            } else {
-                result.append(.tab(offset + 1, entry))
-            }
+        // The tabs that belong to no workspace, kept back so their section can be drawn last.
+        var other: [(Int, VerticalTabEntry)] = []
+        var otherSection: VerticalTabsWorkspaces.Section?
+        // A tab the user dragged away from its workspace's tabs is an ordinary row, and no
+        // longer counts as one of the workspace's — otherwise the section would gather it
+        // straight back to where it was dragged from. See
+        // `VerticalTabsWorkspaces.leavesSection`.
+        let loose = model.tabs.enumerated().filter { _, entry in
+            entry.controller.map { !workspaces.isDetached($0) } ?? false
         }
+        for (offset, entry) in model.tabs.enumerated() {
+            guard let controller = entry.controller,
+                  !workspaces.isDetached(controller),
+                  let section = workspaces.section(for: controller) else {
+                result.append(.tab(offset + 1, entry))
+                continue
+            }
+            // "Other" holds whatever is left, and is drawn after every workspace.
+            if section.isImplicit {
+                otherSection = section
+                other.append((offset + 1, entry))
+                continue
+            }
+            guard placed.insert(section.id).inserted else { continue }
+            let members = loose.filter {
+                $0.element.controller.map { section.members.contains(ObjectIdentifier($0)) } ?? false
+            }
+            result.append(.section(section, members.map { ($0.offset + 1, $0.element) }))
+        }
+        if let otherSection { result.append(.section(otherSection, other)) }
         return result
     }
 
     private func tabGroup(_ controller: TerminalController, entry: VerticalTabEntry, index: Int,
-                          palette: VerticalTabsPalette, inProject: Bool = false) -> some View {
-        // Only looked up for a tab the user has pulled out of its project's bracket, so the
+                          palette: VerticalTabsPalette, inSection: Bool = false) -> some View {
+        // Only looked up for a tab the user has pulled out of its workspace, so the
         // row can offer to put it back. Both calls are lookups; nothing is computed unless
         // the tab is actually out.
-        let bracket = projects.group(for: controller)
+        let section = workspaces.section(for: controller)
         return VerticalTabDragRow(
             drag: drag,
             // Which window's sidebar this is: every window in a tab group shows the same
@@ -680,8 +684,8 @@ struct VerticalTabsSidebar: View {
                 condensed: condensed,
                 collapsed: collapse.collapsed.contains(entry.id),
                 palette: palette,
-                inProject: inProject,
-                putBackProject: projects.isDetached(controller) ? bracket?.name : nil,
+                inSection: inSection,
+                putBackWorkspace: workspaces.isDetached(controller) ? section?.name : nil,
                 onToggleCollapse: { collapse.toggle(entry.id) })
         }
     }
@@ -695,18 +699,18 @@ struct VerticalTabsSidebar: View {
         let tabs = model.tabs
         guard let controller = tabs.first(where: { $0.id == id })?.controller else { return }
         // Where a tab lands also settles the two things a tab carries beyond its place: the
-        // run of pinned tabs at the top of the list, and the project bracket it may have
+        // run of pinned tabs at the top of the list, and the workspace section it may have
         // been dragged out of. Both are read off the order as it stands, before the move.
         VerticalTabsPins.shared.dragged(controller, to: index, among: tabs)
-        if projects.leavesBracket(controller, movingTo: index, in: tabs.map(\.id)) {
-            projects.detach(controller)
+        if workspaces.leavesSection(controller, movingTo: index, in: tabs.map(\.id)) {
+            workspaces.detach(controller)
         }
-        // A tab dropped on one of its own project's tabs changes places with it inside the
-        // bracket rather than moving in the tab order, which would take the whole bracket
-        // with it. See `VerticalTabsProjects.reorderWithinBracket`.
+        // A tab dropped on one of its own workspace's tabs changes places with it inside the
+        // section rather than moving in the tab order, which would take the whole section
+        // with it. See `VerticalTabsWorkspaces.reorderWithinSection`.
         let order = tabs.map(\.id)
         if let onto = tabs[safe: index]?.id,
-           let want = projects.reorderWithinBracket(dragged: id, onto: onto, in: order) {
+           let want = workspaces.reorderWithinSection(dragged: id, onto: onto, in: order) {
             for move in moves(from: order, to: want) {
                 guard let moved = tabs.first(where: { $0.id == move.id })?.controller else { continue }
                 VerticalTabsActions.reorder(moved, to: move.to)
@@ -1396,11 +1400,11 @@ private struct VerticalTabGroup: View {
     let condensed: Bool
     let collapsed: Bool
     let palette: VerticalTabsPalette
-    /// Inside a project bracket, which already provides the side margin.
-    var inProject = false
-    /// The project whose bracket this tab was dragged out of, if it was: the row's menu then
-    /// offers to put it back. See `VerticalTabsProjects.detached`.
-    var putBackProject: String?
+    /// Inside a workspace section, which already provides the side margin.
+    var inSection = false
+    /// The workspace this tab was dragged out of, if it was: the row's menu then offers to put
+    /// it back. See `VerticalTabsWorkspaces.detached`.
+    var putBackWorkspace: String?
     let onToggleCollapse: () -> Void
 
     @State private var snapshot: VerticalTabSnapshot = .empty
@@ -1430,7 +1434,7 @@ private struct VerticalTabGroup: View {
         }
         .extremePanel(active: isSelected, fill: isSelected ? Extreme.panel : Color.clear)
         .overlay(alignment: .leading) { colorCard }
-        .padding(.leading, inProject ? 0 : 8)
+        .padding(.leading, inSection ? 0 : 8)
         .padding(.trailing, 8)
         .onAppear(perform: update)
         .onReceive(VerticalTabsTicker.shared.publisher) {
@@ -1524,16 +1528,9 @@ private struct VerticalTabGroup: View {
 
     @ViewBuilder
     private var contextMenu: some View {
-        if let putBackProject {
-            Button("Put Back in \(putBackProject)") {
-                VerticalTabsProjects.shared.reattach(controller)
-            }
-            Divider()
-        }
-        if let project = VerticalTabsProjects.project(of: controller),
-           UserDefaults.standard.verticalTabsUngroupedProjects.contains(project.id) {
-            Button("Group \(ProjectPath.displayName(project.root)) Tabs Again") {
-                VerticalTabsProjects.shared.regroup(project.id)
+        if let putBackWorkspace {
+            Button("Put Back in \(putBackWorkspace)") {
+                VerticalTabsWorkspaces.shared.reattach(controller)
             }
             Divider()
         }

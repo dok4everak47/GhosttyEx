@@ -21,6 +21,7 @@ enum ExtremeFeature: String, CaseIterable, Identifiable {
     case git
     case memory
     case sharedMemory
+    case workspaces
 
     var id: String { rawValue }
 
@@ -41,6 +42,7 @@ enum ExtremeFeature: String, CaseIterable, Identifiable {
         case .git: return "Git panel"
         case .memory: return "Project memory"
         case .sharedMemory: return "Shared memory"
+        case .workspaces: return "Workspaces"
         }
     }
 
@@ -61,6 +63,7 @@ enum ExtremeFeature: String, CaseIterable, Identifiable {
         case .git: return "Click a tab's branch: switch branches, stashes, recent commits, and its pull request's checks"
         case .memory: return "See, edit and delete what Claude Code and Codex remember about each project"
         case .sharedMemory: return "Codex sessions start with what Claude Code remembers about the project, and Claude Code sessions with what Codex remembers"
+        case .workspaces: return "Sessions grouped by the folder they work in, one section per workspace. Off, the sidebar is one flat list."
         }
     }
 
@@ -77,7 +80,7 @@ enum ExtremeFeature: String, CaseIterable, Identifiable {
         case .activity: return "A"
         case .background: return "K"
         case .memory: return "Y"
-        case .undo, .usage, .ports, .git, .sharedMemory: return nil
+        case .undo, .usage, .ports, .git, .sharedMemory, .workspaces: return nil
         }
     }
 
@@ -110,7 +113,7 @@ enum ExtremePreset: String, CaseIterable, Identifiable {
         switch self {
         case .everything: return Set(ExtremeFeature.allCases)
         case .essentials: return [.editor, .missionControl, .localhost, .review, .undo, .usage, .ports, .git, .memory, .sharedMemory]
-        case .sidebar: return []
+        case .sidebar: return [.workspaces]
         }
     }
 }
@@ -230,7 +233,7 @@ final class ExtremeSettings: ObservableObject {
             PortsMonitor.shared.dismissConflict()
         case .memory:
             AgentToolWindows.close(id: "memory")
-        case .races, .undo, .usage, .git, .sharedMemory:
+        case .races, .undo, .usage, .git, .sharedMemory, .workspaces:
             break
         }
     }

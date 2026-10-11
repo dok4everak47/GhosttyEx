@@ -45,7 +45,7 @@ final class AgentPulse: ObservableObject {
 
     private func recount() {
         var working = 0, waiting = 0
-        for controller in VerticalTabsProjects.openControllers {
+        for controller in VerticalTabsWorkspaces.openControllers {
             for surface in controller.surfaceTree {
                 switch VerticalTabsAgents.shared.info(for: surface)?.activity {
                 case .working: working += 1

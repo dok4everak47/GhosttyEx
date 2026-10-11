@@ -236,19 +236,19 @@ struct FrameLights: NSViewRepresentable {
     }
 }
 
-// MARK: - A project group's bracket
+// MARK: - A workspace's bracket
 
-/// The spine and corner ticks down a project group's side; a run of pixels falls down it
+/// The spine and corner ticks down a workspace's side; a run of pixels falls down it
 /// while an agent works, and the corners blink while one needs you.
 struct BracketLights: NSViewRepresentable {
     let color: Color
-    let state: ProjectGroupSummary.State
+    let state: WorkspaceSummary.State
 
     final class View: NSView {
         let spine = CALayer()
         let ticks = CALayer()
         let fall = CALayer()
-        var config: (CGColor, ProjectGroupSummary.State)?
+        var config: (CGColor, WorkspaceSummary.State)?
         var built: CGSize = .zero
 
         override init(frame: NSRect) {
