@@ -143,15 +143,22 @@ final class VerticalTabsWorkspaces: ObservableObject {
     /// Files a tab in a workspace by hand, which is what dropping a row on a workspace names.
     /// A tab dropped on the workspace its folder already puts it in is an ordinary move, and
     /// one dropped elsewhere leaves the folder behind for as long as the app is running.
+    ///
+    /// Either way the tab is put back among the workspace's tabs. Dropping a tab on a workspace
+    /// is what says it belongs there, and the one thing that has to give way to that is the tab
+    /// having been pulled out of it before: left as it was, a tab whose folder puts it in the
+    /// workspace would be drawn on its own the moment after it was dropped among them.
     func assign(_ controller: TerminalController, to workspace: String) {
         let id = ObjectIdentifier(controller)
         guard workspaces[workspace] != nil else { return }
         if folderWorkspace(for: controller)?.id == workspace {
-            guard assigned.removeValue(forKey: id) != nil else { return }
+            // The folder already puts it here, so a filing by hand has done its job and goes.
+            assigned.removeValue(forKey: id)
+            detached.remove(id)
         } else {
-            guard assigned[id] != workspace else { return }
+            // Nothing to do for a tab already filed here and already drawn among its tabs.
+            guard assigned[id] != workspace || detached.contains(id) else { return }
             assigned[id] = workspace
-            // Filing it puts it back among the workspace's tabs, so it is no longer pulled out.
             detached.remove(id)
         }
         recompute()

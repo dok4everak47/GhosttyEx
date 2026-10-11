@@ -835,6 +835,10 @@ struct VerticalTabsSidebar: View {
         let workspaces = VerticalTabsWorkspaces.shared
         let from = workspaces.section(for: controller)?.id
         guard from != workspace, from != nil else {
+            // The tab's own workspace names nothing to bring together, so this is the ordinary
+            // move — and a tab that had been pulled out of the workspace it is dropped on goes
+            // back among its sessions, which is what dropping it there says.
+            if from == workspace { workspaces.reattach(controller) }
             moveDraggedTab(id, at: index)
             return
         }
@@ -854,8 +858,12 @@ struct VerticalTabsSidebar: View {
     /// workspace, or on its own outside every one — joins this workspace by itself, leaving
     /// whatever it came from where it is.
     private func dropInSection(_ id: ObjectIdentifier, onto workspace: String, at index: Int) {
-        guard let controller = model.tabs.first(where: { $0.id == id })?.controller,
-              workspaces.section(for: controller)?.id != workspace else {
+        guard let controller = model.tabs.first(where: { $0.id == id })?.controller else { return }
+        guard workspaces.section(for: controller)?.id != workspace else {
+            // Landing among the sessions of the workspace the tab belongs to is what puts one
+            // that had been pulled out of them back in; short of that it is the ordinary move,
+            // since a tab drawn in this workspace is a tab already where the drop would put it.
+            workspaces.reattach(controller)
             moveDraggedTab(id, at: index)
             return
         }
