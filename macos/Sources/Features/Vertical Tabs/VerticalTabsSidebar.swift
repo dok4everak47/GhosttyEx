@@ -603,6 +603,7 @@ struct VerticalTabsSidebar: View {
                         .onDrop(of: [VerticalTabDragState.pasteboardType],
                                 delegate: VerticalTabListDropDelegate(drag: drag,
                                                                       owner: ObjectIdentifier(owner),
+                                                                      count: model.tabs.count,
                                                                       drop: pullDraggedTab))
                     }
                 }
@@ -1326,15 +1327,30 @@ private struct VerticalTabDropDelegate: DropDelegate {
 private struct VerticalTabListDropDelegate: DropDelegate {
     let drag: VerticalTabDragState
     let owner: ObjectIdentifier
+    /// How many tabs there are; the order itself is only known to the sidebar.
+    let count: Int
     let drop: (ObjectIdentifier, Int) -> Void
 
     private var isOurs: Bool { drag.owner == owner && drag.origin != nil }
 
-    func validateDrop(info: DropInfo) -> Bool { isOurs }
+    /// Where the drop would put the tab. The row the pointer was last over names it, and the
+    /// room below the last row names the end of the list — which is the case this has to get
+    /// right: a tab carried down past the bottom of the list has its own row as the last one
+    /// the pointer crossed, and a row reports nowhere to land while the drag is over the tab it
+    /// is carrying, so there is nothing else left to read the place off.
+    private var destination: Int? {
+        guard count > 0 else { return nil }
+        return drag.target ?? count - 1
+    }
+
+    func validateDrop(info: DropInfo) -> Bool { isOurs && destination != nil }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard let id = drag.dragging, let from = drag.origin else { drag.end(); return false }
-        guard let to = drag.target, to != from else { drag.end(); return true }  // nowhere to land
+        guard let id = drag.dragging, let to = destination else { drag.end(); return false }
+        // Taken even where the tab is already at that end, since what the drop does beyond the
+        // move is take the tab out of the workspace it was in, and a tab carried to the bottom
+        // of the list has nowhere to move to, which is exactly the tab someone would carry
+        // there. `moveDraggedTab` has the guard for a move that really has nothing to do.
         drag.land()  // the line stays over that row until the tab is there: see `VerticalTabDragState`
         DispatchQueue.main.async { drop(id, to) }
         return true
@@ -1348,7 +1364,9 @@ private struct VerticalTabListDropDelegate: DropDelegate {
 ///
 /// Neither end names a workspace, so the sidebar takes the tab out of the one it was in —
 /// which here is not a matter of where it lands: the ends of the list are beside a block as
-/// often as not, and a tab put down beside its own is drawn as one of them again.
+/// often as not, and a tab put down beside its own is drawn as one of them again. A tab that
+/// already sits at that end is taken just the same: it has nowhere to move to, and the move is
+/// not what the drop is for.
 private struct VerticalTabEdgeDropDelegate: DropDelegate {
     let drag: VerticalTabDragState
     let owner: ObjectIdentifier
@@ -1370,11 +1388,10 @@ private struct VerticalTabEdgeDropDelegate: DropDelegate {
     func validateDrop(info: DropInfo) -> Bool { ours && destination != nil }
 
     func performDrop(info: DropInfo) -> Bool {
-        guard let id = drag.dragging, let from = drag.origin, let to = destination else {
+        guard let id = drag.dragging, let to = destination else {
             drag.end()
             return false
         }
-        guard to != from else { drag.end(); return true }  // already at that end: nothing to do
         // Nothing here drew the place this drop names, so there is no line left hanging over it.
         drag.end()
         DispatchQueue.main.async { drop(id, to) }
