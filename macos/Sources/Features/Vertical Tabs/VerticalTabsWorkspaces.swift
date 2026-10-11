@@ -54,6 +54,11 @@ final class VerticalTabsWorkspaces: ObservableObject {
         let agents: Int
 
         var isImplicit: Bool { id == VerticalTabsWorkspaces.otherID }
+
+        /// The workspace's colour, taken from its folder. The section's header and the tabs
+        /// inside it are both drawn in it, so a tab carries its workspace's colour. "Other"
+        /// owns no folder and so has none.
+        var color: Color? { root.map { LocalhostProject(folder: $0).color } }
     }
 
     /// The sections to draw, in no particular order: the sidebar places each one where its
@@ -412,7 +417,7 @@ struct VerticalTabsWorkspaceSectionView<Content: View>: View {
     @ObservedObject private var localhost = LocalhostSessions.shared
 
     private var collapsed: Bool { collapsedList.split(separator: "\n").contains { $0 == section.id } }
-    private var color: Color { section.root.map { LocalhostProject(folder: $0).color } ?? Extreme.muted }
+    private var color: Color { section.color ?? Extreme.muted }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {

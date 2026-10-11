@@ -501,7 +501,12 @@ struct VerticalTabsSidebar: View {
                                 switch item {
                                 case .tab(let index, let entry):
                                     if let controller = entry.controller {
-                                        tabGroup(controller, entry: entry, index: index, palette: palette)
+                                        // A tab the user pulled out of its workspace is drawn
+                                        // here, between the sections; it still wears the
+                                        // workspace's colour, since it is still one of its
+                                        // tabs and its menu offers to put it back.
+                                        tabGroup(controller, entry: entry, index: index, palette: palette,
+                                                 sectionColor: workspaces.section(for: controller)?.color)
                                             .transition(.opacity)
                                     }
                                 case .section(let section, let members):
@@ -514,6 +519,9 @@ struct VerticalTabsSidebar: View {
                                         : { [section] id, index in
                                             fileDraggedTab(id, in: section.id, at: index)
                                         }
+                                    // Read once for the whole section rather than in each
+                                    // row: it walks the folder up to its repository.
+                                    let sectionColor = section.color
                                     VerticalTabsWorkspaceSectionView(
                                         section: section,
                                         controllers: members.compactMap(\.1.controller),
@@ -522,7 +530,7 @@ struct VerticalTabsSidebar: View {
                                         VStack(spacing: 0) {
                                             ForEach(members, id: \.1.id) { index, entry in
                                                 if let controller = entry.controller {
-                                                    tabGroup(controller, entry: entry, index: index, palette: palette, inSection: true)
+                                                    tabGroup(controller, entry: entry, index: index, palette: palette, inSection: true, sectionColor: sectionColor)
                                                 }
                                             }
                                         }
@@ -670,7 +678,8 @@ struct VerticalTabsSidebar: View {
     }
 
     private func tabGroup(_ controller: TerminalController, entry: VerticalTabEntry, index: Int,
-                          palette: VerticalTabsPalette, inSection: Bool = false) -> some View {
+                          palette: VerticalTabsPalette, inSection: Bool = false,
+                          sectionColor: Color? = nil) -> some View {
         // Only looked up for a tab the user has pulled out of its workspace, so the
         // row can offer to put it back. Both calls are lookups; nothing is computed unless
         // the tab is actually out.
@@ -699,6 +708,7 @@ struct VerticalTabsSidebar: View {
                 collapsed: collapse.collapsed.contains(entry.id),
                 palette: palette,
                 inSection: inSection,
+                sectionColor: sectionColor,
                 putBackWorkspace: workspaces.isDetached(controller) ? section?.name : nil,
                 moveTo: moveTo,
                 onToggleCollapse: { collapse.toggle(entry.id) })
@@ -1430,6 +1440,9 @@ private struct VerticalTabGroup: View {
     let palette: VerticalTabsPalette
     /// Inside a workspace section, which already provides the side margin.
     var inSection = false
+    /// The colour of the workspace this row is drawn in, which the row wears unless it has been
+    /// given a colour of its own. Nil outside a section, and for "Other", which owns no folder.
+    var sectionColor: Color?
     /// The workspace this tab was dragged out of, if it was: the row's menu then offers to put
     /// it back. See `VerticalTabsWorkspaces.detached`.
     var putBackWorkspace: String?
@@ -1530,11 +1543,13 @@ private struct VerticalTabGroup: View {
         return Self.cleanTitle(snapshot.title)
     }
 
-    /// A colored tab carries its color as a bar down its left edge.
+    /// The bar down the row's left edge. A tab given a colour keeps it — that is what the
+    /// menu's Tab Color is for — and any other tab in a workspace wears the workspace's colour,
+    /// so the rows under a section read as that workspace's.
     @ViewBuilder
     private var colorCard: some View {
-        if let ns = tabColor.displayColor {
-            Rectangle().fill(Color(nsColor: ns)).frame(width: 2).padding(.vertical, 1)
+        if let color = tabColor.displayColor.map({ Color(nsColor: $0) }) ?? sectionColor {
+            Rectangle().fill(color).frame(width: 2).padding(.vertical, 1)
         }
     }
 
