@@ -58,7 +58,11 @@ final class VerticalTabsWorkspaces: ObservableObject {
         /// The workspace's colour, taken from its folder. The section's header and the tabs
         /// inside it are both drawn in it, so a tab carries its workspace's colour. "Other"
         /// owns no folder and so has none.
-        var color: Color? { root.map { LocalhostProject(folder: $0).color } }
+        ///
+        /// The root has already been through `LocalhostProject(folder:)` when the workspace was
+        /// seeded, so this colours it without another walk of the file system — it is asked for
+        /// once per row the sidebar draws.
+        var color: Color? { root.map { LocalhostProject.color(forRoot: $0) } }
     }
 
     /// The sections to draw, in no particular order: the sidebar places each one where its
@@ -458,7 +462,6 @@ struct VerticalTabsWorkspaceSectionView<Content: View>: View {
         .padding(.trailing, 10)
         .contentShape(Rectangle())
         .onHover { inside in withAnimation(.easeOut(duration: 0.15)) { hovering = inside } }
-        .onTapGesture(count: 2, perform: toggleCollapse)
         .contextMenu {
             if let root = section.root {
                 Button("Open \(section.name) in Code Editor") { EditorPanel.shared.show(from: owner, folder: root) }
@@ -469,23 +472,33 @@ struct VerticalTabsWorkspaceSectionView<Content: View>: View {
         }
     }
 
+    /// The name, then the row's controls. A double-click folds the workspace, but only on the
+    /// name: a view that answers a double-click holds a click back while it waits for the
+    /// second one, so a button inside it answers late — and a double-click on the port chip
+    /// would both open the server and fold the section it is in.
     private var headerRow: some View {
         HStack(spacing: 7) {
-            Rectangle().fill(color).frame(width: 7, height: 7).shadow(color: color.opacity(0.8), radius: 3)
-            Text(section.name)
-                .font(Extreme.font(12.5, weight: .semibold))
-                .foregroundColor(Extreme.text)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            if section.agents > 0 {
-                Text(section.agents == 1 ? "1 agent" : "\(section.agents) agents")
-                    .font(Extreme.font(10, weight: .semibold))
-                    .foregroundColor(color)
-                    .padding(.horizontal, 4).padding(.vertical, 1)
-                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(color.opacity(0.5), lineWidth: 1))
-                    .fixedSize()
+            HStack(spacing: 7) {
+                Rectangle().fill(color).frame(width: 7, height: 7).shadow(color: color.opacity(0.8), radius: 3)
+                Text(section.name)
+                    .font(Extreme.font(12.5, weight: .semibold))
+                    .foregroundColor(Extreme.text)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                if section.agents > 0 {
+                    Text(section.agents == 1 ? "1 agent" : "\(section.agents) agents")
+                        .font(Extreme.font(10, weight: .semibold))
+                        .foregroundColor(color)
+                        .padding(.horizontal, 4).padding(.vertical, 1)
+                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous)).overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(color.opacity(0.5), lineWidth: 1))
+                        .fixedSize()
+                }
             }
-            Spacer(minLength: 2)
+            // The name takes the room the buttons leave, so a double-click anywhere along the
+            // header short of them folds the section, as it always has.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2, perform: toggleCollapse)
             if let server = projectServer, let url = server.url {
                 Button {
                     VisualFixPanel.shared.show(from: owner, url: url)
@@ -510,7 +523,9 @@ struct VerticalTabsWorkspaceSectionView<Content: View>: View {
             }
             Button(action: toggleCollapse) {
                 PixelIconView(icon: collapsed ? .chevronRight : .chevronDown, color: Extreme.muted, pixel: 1.25)
-                    .frame(width: 14, height: 14)
+                    // As wide and as tall as the button beside it, rather than the chevron's
+                    // own 14 points, so the fold is as easy to hit as anything else up here.
+                    .frame(width: 20, height: 16)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)

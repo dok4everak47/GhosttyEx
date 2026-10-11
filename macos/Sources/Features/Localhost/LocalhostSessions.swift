@@ -85,16 +85,22 @@ struct LocalhostProject: Hashable {
     var name: String { (root as NSString).lastPathComponent }
 
     /// A stable, vivid color per project so its servers are easy to pick out.
-    var color: Color {
-        let palette: [Color] = [
-            Color(red: 0.20, green: 0.83, blue: 0.93), Color(red: 0.62, green: 0.45, blue: 1.00),
-            Color(red: 1.00, green: 0.45, blue: 0.70), Color(red: 0.35, green: 0.90, blue: 0.55),
-            Color(red: 1.00, green: 0.66, blue: 0.25), Color(red: 0.40, green: 0.60, blue: 1.00),
-            Color(red: 0.98, green: 0.85, blue: 0.30), Color(red: 1.00, green: 0.42, blue: 0.40),
-        ]
+    var color: Color { Self.color(forRoot: root) }
+
+    /// The colour a root is drawn in. A root is hashed as it is spelled, so anything that
+    /// already holds one — a workspace's root, say, which has been through `init(folder:)`
+    /// once — can be coloured without walking the file system again.
+    static func color(forRoot root: String) -> Color {
         let hash = root.unicodeScalars.reduce(UInt32(5381)) { ($0 &<< 5) &+ $0 &+ $1.value }
         return palette[Int(hash % UInt32(palette.count))]
     }
+
+    private static let palette: [Color] = [
+        Color(red: 0.20, green: 0.83, blue: 0.93), Color(red: 0.62, green: 0.45, blue: 1.00),
+        Color(red: 1.00, green: 0.45, blue: 0.70), Color(red: 0.35, green: 0.90, blue: 0.55),
+        Color(red: 1.00, green: 0.66, blue: 0.25), Color(red: 0.40, green: 0.60, blue: 1.00),
+        Color(red: 0.98, green: 0.85, blue: 0.30), Color(red: 1.00, green: 0.42, blue: 0.40),
+    ]
 }
 
 /// What kind of server it is, for its badge.
