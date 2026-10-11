@@ -1,6 +1,7 @@
 #if os(macOS)
 import AppKit
 import Combine
+import OSLog
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -824,7 +825,10 @@ struct VerticalTabsSidebar: View {
         // move refuses this before it gets here; a drop on a workspace's block has to ask,
         // because the same drop is also how a workspace is merged into another, and settling
         // the tab's place over a move that never happened would be a change it didn't ask for.
-        guard tabs.firstIndex(where: { $0.id == id }) != index else { return }
+        guard tabs.firstIndex(where: { $0.id == id }) != index else {
+            DragLog.write("move: already at \(index)")
+            return
+        }
         // Where a tab lands also settles the two things a tab carries beyond its place: the
         // run of pinned tabs at the top of the list, and the workspace section it may have
         // been dragged out of. Both are read off the order as it stands, before the move.
@@ -852,6 +856,7 @@ struct VerticalTabsSidebar: View {
         // sidebars have models of their own.
         model.refresh()
         VerticalTabs.setNeedsRefresh()
+        logOrder("moved to \(index)")
     }
 
     /// Puts the dragged tab in a workspace by hand, without the workspace it came from coming
@@ -864,6 +869,7 @@ struct VerticalTabsSidebar: View {
         VerticalTabsActions.reorder(controller, to: index)
         model.refresh()
         VerticalTabs.setNeedsRefresh()
+        logOrder("filed at \(index)")
     }
 
     /// A drop on a workspace's header: its name, the controls beside it, and the status line
@@ -899,6 +905,7 @@ struct VerticalTabsSidebar: View {
         VerticalTabsActions.reorder(controller, to: index)
         model.refresh()
         VerticalTabs.setNeedsRefresh()
+        logOrder("merged, at \(index)")
     }
 
     /// A drop on a row inside a workspace. A tab that is already drawn in that workspace is
@@ -934,9 +941,18 @@ struct VerticalTabsSidebar: View {
     /// drawn again — this is a place the user chose for it, not a claim about its folder.
     private func pullDraggedTab(_ id: ObjectIdentifier, at index: Int) {
         if let controller = model.tabs.first(where: { $0.id == id })?.controller {
+            DragLog.write("pull: out of \(workspaces.section(for: controller)?.name ?? "-") → \(index)")
             workspaces.detach(controller)
         }
         moveDraggedTab(id, at: index)
+    }
+
+    /// The tab order as it now stands, for `DragLog`: the window titles in the order the sidebar
+    /// draws them, so that a drop can be read back as the row that moved rather than as a pair of
+    /// numbers. Only ever called by a drop that has just been taken.
+    private func logOrder(_ note: String) {
+        DragLog.write(note + ": " + model.tabs.map { $0.controller?.window?.title ?? "?" }
+            .joined(separator: " | "))
     }
 
     /// The tabs to move, and where, to leave the tab order as `want` reads: the tabs already
@@ -999,6 +1015,28 @@ struct VerticalTabsSidebar: View {
         .padding(.horizontal, 12)
         .padding(.top, 12)
         .padding(.bottom, 10)
+    }
+}
+
+/// What a sidebar drag decided, written down as it is decided.
+///
+/// A drag cannot be driven from outside the app — synthetic events do not start SwiftUI's own
+/// drag — so what a gesture did is only ever seen by the hand that made it, and by the time it
+/// is described the pointer has moved on and the line is gone. These lines are written by the
+/// drag itself instead: which place took the drop, what that place read its index off, and the
+/// tab order the drop left behind. Read back with
+///
+///     log show --last 5m --debug --predicate 'category == "drag"'
+///
+/// Nothing is shown anywhere: debug lines are not kept unless they are asked for, and one drop
+/// writes three lines. The values are public so they can be read without a logging profile —
+/// they are tab numbers and window titles, never anything the terminal is running.
+enum DragLog {
+    fileprivate static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "ghostty",
+                                           category: "drag")
+
+    static func write(_ line: String) {
+        logger.debug("\(line, privacy: .public)")
     }
 }
 
@@ -1381,6 +1419,7 @@ private struct VerticalTabDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         guard let id = drag.dragging, let from = source else { drag.end(); return false }
+        DragLog.write("row: origin \(from) onto \(index), \(drag.after ? "below" : "above")")
         guard from != index else { drag.end(); return true }  // put back where it started
         // The drag is ended where the move is made, not here, so the line stays over the place
         // the tab is going until it has actually gone there.
@@ -1432,6 +1471,8 @@ private struct VerticalTabListDropDelegate: DropDelegate {
 
     func performDrop(info: DropInfo) -> Bool {
         guard let id = drag.dragging, let to = destination else { drag.end(); return false }
+        DragLog.write("list: row \(drag.target.map(String.init) ?? "-"), "
+                      + "block \(drag.block ?? "-") at \(drag.blockTop.map(String.init) ?? "-") → \(to)")
         // Taken even where the tab is already at that end, since what the drop does beyond the
         // move is take the tab out of the workspace it was in, and a tab carried to the bottom
         // of the list has nowhere to move to, which is exactly the tab someone would carry
@@ -1477,6 +1518,7 @@ private struct VerticalTabEdgeDropDelegate: DropDelegate {
             drag.end()
             return false
         }
+        DragLog.write("edge: \(toFront ? "top" : "bottom") → \(to)")
         // Nothing here drew the place this drop names, so there is no line left hanging over it.
         drag.end()
         DispatchQueue.main.async { drop(id, to) }
@@ -1523,6 +1565,7 @@ struct VerticalTabBlockDropDelegate: DropDelegate {
         // the time the tab lands. The tab being at that place already is a tab already at the
         // top of the block, and one just above it has nowhere nearer to go.
         let to = top - (from < top ? 1 : 0)
+        DragLog.write("block: \(block) top \(top), origin \(from) → \(to)")
         // Where an ordinary move has nowhere to go, the drop is still taken: on a workspace's
         // block it is how one workspace is merged into another, and the tab that sits right
         // above the block — the last of the workspace above it — is the one a user picks up
