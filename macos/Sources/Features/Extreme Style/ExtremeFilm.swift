@@ -264,9 +264,24 @@ struct BracketLights: NSViewRepresentable {
         override var isFlipped: Bool { true }
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
+        /// A block grows and shrinks as its rows come and go, and it is animated the whole way
+        /// through a fold, so the height here changes on nearly every frame of one. Rebuilding
+        /// the bracket on each of those frames tore its ticks down and started the light
+        /// falling down it again and again, which is what made the side of a workspace jump as
+        /// it folded. The frame moves what is already drawn, and the light is started afresh
+        /// once, when the height has settled.
+        private var settle: DispatchWorkItem?
+
         override func layout() {
             super.layout()
-            if bounds.size != built { rebuild() }
+            guard bounds.size != built else { return }
+            // A different width is a different bracket; a different height is the same one,
+            // longer or shorter.
+            if built == .zero || bounds.width != built.width {
+                rebuild()
+            } else {
+                resize()
+            }
         }
 
         override func viewDidMoveToWindow() {
@@ -302,27 +317,70 @@ struct BracketLights: NSViewRepresentable {
                 ticks.addLoop(animation, duration: 0.6, key: "blink")
             }
             fall.frame = bounds
-            fall.sublayers?.forEach { $0.removeFromSuperlayer() }
-            if state == .working && h > 20 && !MotionTest.off.contains("bracket") {
-                // Five pixels falling down the spine in steps, a lap every ~1.2 s or more.
-                let segment: CGFloat = 6
-                let lap = max(1.2, Double(h) / 110)
-                let steps = Int((h + segment * 5) / segment) + 1
-                for i in 0..<5 {
-                    let piece = CALayer()
-                    piece.anchorPoint = .zero
-                    piece.frame = CGRect(x: 0, y: -segment, width: t, height: segment - 1)
-                    piece.backgroundColor = NSColor(Extreme.core).withAlphaComponent(1 - CGFloat(i) / 5).cgColor
-                    glow(piece, shadow, 0.5 * (1 - CGFloat(i) / 5), 3)
-                    fall.addSublayer(piece)
-                    let ys = (0..<steps).map { step -> NSValue in
-                        let y = CGFloat(step) * segment - CGFloat(i) * segment
-                        return NSValue(point: CGPoint(x: 0, y: y >= 0 && y < h ? y : -segment * 2))
-                    }
-                    piece.addLoop(discrete("position", ys), duration: lap, key: "fall")
-                }
-            }
+            addFall(h: h, t: t, shadow: shadow, state: state)
             CATransaction.commit()
+        }
+
+        /// The frame has a new height: what is already drawn is moved to it. The corner ticks
+        /// and their blinking are left running — they are the same ticks, at the same ends, and
+        /// only the two at the bottom have moved — and the light that falls the length of the
+        /// bracket is worked out again when the height settles, which a fold takes a fifth of a
+        /// second to reach.
+        private func resize() {
+            built = bounds.size
+            guard config != nil, bounds.height > 0 else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            let t: CGFloat = 2, tick: CGFloat = 8, h = bounds.height
+            spine.frame = CGRect(x: 0, y: 0, width: t, height: h)
+            ticks.frame = bounds
+            let at = [CGRect(x: 0, y: 0, width: tick, height: t), CGRect(x: 0, y: h - t, width: tick, height: t),
+                      CGRect(x: 0, y: 0, width: t, height: tick), CGRect(x: 0, y: h - tick, width: t, height: tick)]
+            for (index, bar) in (ticks.sublayers ?? []).enumerated() where index < at.count {
+                bar.frame = at[index]
+            }
+            fall.frame = bounds
+            CATransaction.commit()
+
+            settle?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.settled() }
+            settle = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+        }
+
+        /// The height has stopped changing, which is when the light falling the length of the
+        /// bracket can be given the lap and the steps that length calls for — the one thing
+        /// about it that the height decides.
+        private func settled() {
+            guard let (color, state) = config, bounds.height > 0 else { return }
+            let shadow = state == .working ? NSColor(Extreme.core).cgColor : color
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            fall.frame = bounds
+            addFall(h: bounds.height, t: 2, shadow: shadow, state: state)
+            CATransaction.commit()
+        }
+
+        /// Five pixels falling down the spine in steps, a lap every ~1.2 s or more.
+        private func addFall(h: CGFloat, t: CGFloat, shadow: CGColor, state: WorkspaceSummary.State) {
+            fall.sublayers?.forEach { $0.removeFromSuperlayer() }
+            guard state == .working, h > 20, !MotionTest.off.contains("bracket") else { return }
+            let segment: CGFloat = 6
+            let lap = max(1.2, Double(h) / 110)
+            let steps = Int((h + segment * 5) / segment) + 1
+            for i in 0..<5 {
+                let piece = CALayer()
+                piece.anchorPoint = .zero
+                piece.frame = CGRect(x: 0, y: -segment, width: t, height: segment - 1)
+                piece.backgroundColor = NSColor(Extreme.core).withAlphaComponent(1 - CGFloat(i) / 5).cgColor
+                glow(piece, shadow, 0.5 * (1 - CGFloat(i) / 5), 3)
+                fall.addSublayer(piece)
+                let ys = (0..<steps).map { step -> NSValue in
+                    let y = CGFloat(step) * segment - CGFloat(i) * segment
+                    return NSValue(point: CGPoint(x: 0, y: y >= 0 && y < h ? y : -segment * 2))
+                }
+                piece.addLoop(discrete("position", ys), duration: lap, key: "fall")
+            }
         }
     }
 

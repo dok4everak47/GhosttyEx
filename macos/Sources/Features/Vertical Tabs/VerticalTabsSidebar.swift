@@ -1230,6 +1230,10 @@ private struct VerticalTabDragRow<Content: View>: View {
     private var landsAbove: Bool { isTarget && !drag.after }
     private var landsBelow: Bool { isTarget && drag.after }
 
+    /// How wide the row is drawn while it is being carried. The sidebar's own width would be
+    /// exact, but it is a setting away from here and the picture only has to read as the row.
+    static var previewWidth: CGFloat { 240 }
+
     init(drag: VerticalTabDragState, owner: ObjectIdentifier, index: Int, id: ObjectIdentifier,
          drop: @escaping (ObjectIdentifier, Int) -> Void,
          @ViewBuilder content: () -> Content) {
@@ -1266,12 +1270,19 @@ private struct VerticalTabDragRow<Content: View>: View {
             .animation(.easeOut(duration: 0.1), value: landsAbove)
             .animation(.easeOut(duration: 0.1), value: landsBelow)
             .animation(.easeOut(duration: 0.12), value: isDragged)
-            .onDrag {
+            // What is carried under the pointer is the row itself, at a sidebar's width.
+            // Without it macOS makes the drag image out of the window the row was picked up in —
+            // a 1512×982 picture of the whole window, one layer, composited for the whole drag.
+            .onDrag({
                 drag.begin(id, in: owner, at: index)
                 drag.watchForEnd()
                 return NSItemProvider(item: Data() as NSData,
                                       typeIdentifier: VerticalTabDragState.pasteboardType.identifier)
-            }
+            }, preview: {
+                content
+                    .frame(width: VerticalTabDragRow.previewWidth)
+                    .opacity(0.92)
+            })
             .onDrop(of: [VerticalTabDragState.pasteboardType],
                     delegate: VerticalTabDropDelegate(drag: drag, owner: owner, index: index, drop: drop))
     }

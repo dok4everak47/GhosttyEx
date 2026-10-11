@@ -78,6 +78,12 @@ final class VerticalTabsWorkspaces: ObservableObject {
     /// the next launch works the folder out again.
     @Published private(set) var assigned: [ObjectIdentifier: String] = [:]
 
+    /// The folder each open tab works in, as of the last pass, for the tabs that have one. The
+    /// sidebar asks this of every row it draws — the row's menu offers to make a workspace out
+    /// of a folder no workspace owns — and working a folder out means walking up to a dozen
+    /// folders looking for a repository. The pass that worked out the sections has done that
+    /// walk already, so its answers are kept here rather than made again per row.
+    private var folders: [ObjectIdentifier: (root: String, canonical: String)] = [:]
     /// The workspaces, by id.
     private(set) var workspaces: [String: Workspace] = [:]
     private var tabSection: [ObjectIdentifier: String] = [:]
@@ -136,7 +142,7 @@ final class VerticalTabsWorkspaces: ObservableObject {
     /// The workspace a tab's folder belongs to, or nil for one that has no folder of its own
     /// and so would be drawn in the "Other" section.
     func folderWorkspace(for controller: TerminalController) -> Workspace? {
-        guard let membership = Self.membership(of: controller) else { return nil }
+        guard let membership = membership(of: controller) else { return nil }
         return workspaceID(for: membership.canonical).flatMap { workspaces[$0] }
     }
 
@@ -254,7 +260,7 @@ final class VerticalTabsWorkspaces: ObservableObject {
     /// The folder a tab works in and how many agent sessions it has there: where its agent is,
     /// or else its focused pane. Localhost tabs count their server's folder. Nil for a tab with
     /// no folder of its own — the home folder, the disk, a Hermes tab.
-    static func membership(of controller: TerminalController) -> (root: String, canonical: String, agents: Int)? {
+    func membership(of controller: TerminalController) -> (root: String, canonical: String, agents: Int)? {
         guard !HermesSessions.shared.isHermes(controller) else { return nil }
         let surfaces = Array(controller.surfaceTree)
         let agentSurfaces = surfaces.filter { surface in
@@ -266,16 +272,40 @@ final class VerticalTabsWorkspaces: ObservableObject {
             ?? (agentSurfaces.first ?? controller.focusedSurface ?? surfaces.first)?.pwd
         guard let pwd = folder, let canonical = projectID(of: pwd) else { return nil }
         let agents = agentSurfaces.filter { $0.pwd.flatMap(projectID(of:)) == canonical }.count
-        return (LocalhostProject(folder: pwd).root, canonical, agents)
+        return (projectRoot(of: pwd), canonical, agents)
     }
 
     /// The folder a tab works in, as a project: nil for a home folder or the disk, which aren't
     /// projects.
-    private static func projectID(of folder: String) -> String? {
-        let id = ProjectPath.canonical(LocalhostProject(folder: folder).root)
-        let home = ProjectPath.canonical(NSHomeDirectory())
+    private func projectID(of folder: String) -> String? {
+        let id = ProjectPath.canonical(projectRoot(of: folder))
+        let home = Self.home
         guard id != home, id != "/", !home.hasPrefix(id + "/") else { return nil }
         return id
+    }
+
+    /// The folder's home, canonicalised once. It is asked for by every tab of every pass, and
+    /// the answer never changes.
+    private static let home = ProjectPath.canonical(NSHomeDirectory())
+
+    /// The repository root a folder belongs to, which `LocalhostProject` works out by walking
+    /// up to a dozen folders looking for one. This is asked for several times per tab — the
+    /// tab's own folder, then its agents' — and the pass that asks runs several times a second
+    /// while an agent works, so the answer is kept for a few seconds: a folder that becomes a
+    /// repository, or stops being one, is picked up soon enough after.
+    private var projectRoots: [String: (root: String, at: Date)] = [:]
+    private static let projectRootLifetime: TimeInterval = 5
+
+    private func projectRoot(of folder: String) -> String {
+        let now = Date()
+        if let known = projectRoots[folder], now.timeIntervalSince(known.at) < Self.projectRootLifetime {
+            return known.root
+        }
+        let root = LocalhostProject(folder: folder).root
+        // Folders come and go with every `cd`; the answers for the ones gone are not missed.
+        if projectRoots.count > 256 { projectRoots.removeAll() }
+        projectRoots[folder] = (root, now)
+        return root
     }
 
     /// The workspace that owns a folder, taking the longest match so a folder inside another
@@ -305,15 +335,20 @@ final class VerticalTabsWorkspaces: ObservableObject {
 
     /// Whether "New Workspace" would make one: the tab works in a folder no workspace owns.
     /// False for a tab with no folder of its own, since a workspace is a place to work.
+    ///
+    /// The sidebar asks this for every row it draws, and working the answer out from scratch
+    /// means walking up to a repository for the tab — which the pass that drew the sections has
+    /// just done for every one of them. So this reads what that pass worked out, rather than
+    /// walking the folders again on the way through a redraw.
     func canCreateWorkspace(for controller: TerminalController) -> Bool {
-        guard let membership = Self.membership(of: controller) else { return false }
-        return workspaceID(for: membership.canonical) == nil
+        guard let folder = folders[ObjectIdentifier(controller)] else { return false }
+        return workspaceID(for: folder.canonical) == nil
     }
 
     /// Makes a workspace out of the folder a tab works in and puts the tab in it.
     @discardableResult
     func createWorkspace(for controller: TerminalController) -> String? {
-        guard let membership = Self.membership(of: controller) else { return nil }
+        guard let membership = membership(of: controller) else { return nil }
         let id = create(root: membership.root, canonical: membership.canonical)
         assign(controller, to: id)
         return id
@@ -382,6 +417,7 @@ final class VerticalTabsWorkspaces: ObservableObject {
 
         var members: [String: Set<ObjectIdentifier>] = [:]
         var agents: [String: Int] = [:]
+        var folders: [ObjectIdentifier: (root: String, canonical: String)] = [:]
         // Read once per pass: it filters every window the app has, and the pass runs several
         // times a second while an agent works.
         let open = Self.openControllers
@@ -389,7 +425,8 @@ final class VerticalTabsWorkspaces: ObservableObject {
             let id = ObjectIdentifier(controller)
             // A workspace is made by hand — see `create` — so a tab whose folder belongs to
             // none of them is drawn on its own, under "Other", until one is made for it.
-            let membership = Self.membership(of: controller)
+            let membership = membership(of: controller)
+            if let membership { folders[id] = (membership.root, membership.canonical) }
             let filed = assigned[id].flatMap { workspaces[$0] != nil ? $0 : nil }
             guard let section = filed ?? membership.flatMap({ workspaceID(for: $0.canonical) }) else {
                 members[Self.otherID, default: []].insert(id)
@@ -411,6 +448,11 @@ final class VerticalTabsWorkspaces: ObservableObject {
             next.append(Section(id: Self.otherID, name: Self.otherName, root: nil,
                                 members: other, agents: agents[Self.otherID] ?? 0))
         }
+
+        // Handed over before the guard below, which is only about what is drawn: the rows are
+        // asked about their folders whenever they are drawn, whether or not this pass found
+        // anything new to draw.
+        self.folders = folders
 
         guard next != sections else { return }
         tabSection = [:]
@@ -735,7 +777,10 @@ struct VerticalTabsWorkspaceSectionView<Content: View>: View {
     private func update() {
         var next = WorkspaceSummary()
         var changedBy: [String: Set<ObjectIdentifier>] = [:]
-        for controller in controllers where VerticalTabsWorkspaces.openControllers.contains(where: { $0 === controller }) {
+        // Worked out once: it filters every window the app has, and this runs per block per
+        // tick, over every tab in the block.
+        let open = Set(VerticalTabsWorkspaces.openControllers.map(ObjectIdentifier.init))
+        for controller in controllers where open.contains(ObjectIdentifier(controller)) {
             for surface in controller.surfaceTree {
                 guard let info = VerticalTabsAgents.shared.info(for: surface), info.kind != .hermes else { continue }
                 switch info.activity {
